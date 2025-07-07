@@ -414,23 +414,30 @@ async def remove_message_job(context: ContextTypes.DEFAULT_TYPE):
 async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str, chat_id: int, message_id_to_edit: int = None, greeting: str = None):
     """
     Основная логика для отображения главного меню.
-    Показывает для бригадира полную сводку по его табелю на день.
+    Показывает для бригадира максимально понятную сводку по его табелю.
     """
     user_role = check_user_role(user_id)
     
     keyboard_buttons = []
     roster_summary_text = "" 
 
-    # <<< НАЧАЛО ИЗМЕНЕНИЙ: Расширяем логику для бригадира >>>
     if user_role['isForeman']:
         today_str = date.today().strftime('%Y-%m-%d')
-        # Ищем табель на сегодня
-        roster_info = db_query("SELECT total_people FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
+        roster_info = db_query("SELECT id, total_people FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
         
         if roster_info:
-            total_declared = roster_info[0][0]
+            roster_id, total_declared = roster_info[0]
             
-            # Считаем, сколько людей уже задействовано в отчетах за сегодня
+            # Получаем детализацию состава
+            details_raw = db_query("""
+                SELECT pr.role_name, drd.people_count
+                FROM daily_roster_details drd
+                JOIN personnel_roles pr ON drd.role_id = pr.id
+                WHERE drd.roster_id = %s
+            """, (roster_id,))
+            details_text = ", ".join([f"{name}: {count}" for name, count in details_raw]) if details_raw else "детали не найдены"
+            
+            # Считаем задействованных людей
             brigade_name_for_query = user_role.get('brigadeName') or f"Бригада пользователя {user_id}"
             assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name_for_query, today_str))
             total_assigned = assigned_info[0][0] or 0 if assigned_info else 0
@@ -438,16 +445,17 @@ async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str,
             # Вычисляем остаток
             reserve = total_declared - total_assigned
             
-            # Формируем новый, подробный текст для главного меню
+            # Формируем итоговый текст с разделителями
             roster_summary_text = (
-                f"\n\n📋 *Ваш табель на сегодня:*\n"
-                f"▪️ Заявлено всего: *{total_declared}* чел.\n"
+                f"\n\n📋 *Табель на сегодня:*\n"
+                f"▪️ *Состав:* {details_text}\n"
+                f"▪️ *Всего заявлено:* {total_declared} чел.\n\n"
+                f"📊 *Статус выполнения:*\n"
                 f"▪️ Задействовано в отчетах: *{total_assigned}* чел.\n"
-                f"▪️ Осталось в резерве: *{reserve}* чел."
+                f"▪️ Свободно в резерве: *{reserve}* чел."
             )
-    # <<< КОНЕЦ ИЗМЕНЕНИЙ >>>
 
-    # --- Остальная часть функции без изменений ---
+    # --- Логика отображения кнопок ---
     # Кнопку "Подать табель" показываем, только если табель еще НЕ подан
     if user_role['isForeman'] and not roster_summary_text:
          keyboard_buttons.append([InlineKeyboardButton("📋 Подать табель на сегодня", callback_data="submit_roster")])
@@ -471,12 +479,14 @@ async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str,
 
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
     
+    # Собираем финальный текст сообщения
     text = "🏠 *Главное меню*"
     if greeting:
         text = f"{greeting}\n\n{text}"
     
     text += roster_summary_text # Добавляем информацию о табеле
     
+    # Отправка или редактирование сообщения
     try:
         if message_id_to_edit:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text=text, reply_markup=keyboard, parse_mode='Markdown')
