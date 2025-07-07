@@ -98,7 +98,7 @@ def init_db():
         '''CREATE TABLE pto (user_id VARCHAR(255) PRIMARY KEY, discipline INTEGER REFERENCES disciplines(id), first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT)''',
         '''CREATE TABLE kiok (user_id VARCHAR(255) PRIMARY KEY, discipline INTEGER REFERENCES disciplines(id), first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT)''',
         '''CREATE TABLE reports (id SERIAL PRIMARY KEY, timestamp TIMESTAMPTZ DEFAULT NOW(), corpus_name TEXT, discipline_name TEXT, work_type_name TEXT, foreman_name TEXT, people_count INTEGER, volume REAL, report_date DATE, notes TEXT, kiok_approved INTEGER DEFAULT 0, kiok_approver_id VARCHAR(255), kiok_approval_timestamp TIMESTAMPTZ, group_message_id BIGINT)''',
-        '''CREATE TABLE topic_mappings (discipline_name TEXT PRIMARY KEY, chat_id BIGINT NOT NULL, topic_id INTEGER NOT NULL)'''
+        '''CREATE TABLE topic_mappings (discipline_name TEXT PRIMARY KEY, chat_id BIGINT NOT NULL, topic_id INTEGER NOT NULL)''',
         '''CREATE TABLE personnel_roles (
             id SERIAL PRIMARY KEY,
             role_name TEXT NOT NULL,
