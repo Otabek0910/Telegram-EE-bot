@@ -2079,13 +2079,10 @@ async def export_reports_to_excel(update: Update, context: ContextTypes.DEFAULT_
             worksheet = writer.sheets['Отчеты по работам']
             
             # <<< НАЧАЛО ИСПРАВЛЕНИЯ: Новый способ установки ширины колонок >>>
-            for i, col_name in enumerate(formatted_df.columns, 1):
-                column_letter = get_column_letter(i)
-                max_length = max(
-                    formatted_df[col_name].astype(str).map(len).max(),
-                    len(col_name)
-                ) + 2
-                worksheet.column_dimensions[column_letter].width = max_length
+            for i, col in enumerate(formatted_df.columns):
+                column_len = max(formatted_df[col].astype(str).map(len).max(), len(col)) + 2
+                worksheet.set_column(i, i, column_len)
+                
             # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
 
         await context.bot.send_document(
@@ -2127,7 +2124,7 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
         engine = create_engine(DATABASE_URL)
 
         raw_file_path = os.path.join(TEMP_DIR, f"raw_full_db_{user_id}_{current_date_str}.xlsx")
-        with pd.ExcelWriter(raw_file_path, engine='openpyxl') as writer:
+        with pd.ExcelWriter(raw_file_path, engine='xlsxwriter') as writer:
             with engine.connect() as connection:
                 for table_name in table_names:
                     query_check_table = text("SELECT EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename  = :table_name)")
