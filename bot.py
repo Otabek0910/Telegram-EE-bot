@@ -381,6 +381,25 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             logger.info(f"Не удалось удалить /start в группе (возможно, нет прав): {e}")
 
+async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Принудительно завершает любой активный диалог по команде /start
+    и показывает главное меню.
+    """
+    user_id = str(update.effective_user.id)
+    chat_id = update.effective_chat.id
+    
+    logger.info(f"Пользователь {user_id} использовал /start для сброса диалога.")
+    
+    # Очищаем любые временные данные, которые могли остаться от диалога
+    context.user_data.clear()
+    
+    # Показываем главное меню (отправляем как новое сообщение)
+    await show_main_menu_logic(context, user_id, chat_id)
+    
+    # Корректно завершаем ConversationHandler
+    return ConversationHandler.END
+
 async def remove_message_job(context: ContextTypes.DEFAULT_TYPE):
     """Задача для удаления сообщения по расписанию."""
     job_data = context.job.data
@@ -3711,7 +3730,9 @@ def main() -> None:
         states={
             AWAITING_RESTORE_FILE: [MessageHandler(filters.Document.MimeType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"), handle_db_restore_file)]
         },
-        fallbacks=[CommandHandler('cancel', cancel_restore)],
+        fallbacks=[CommandHandler('cancel', cancel_restore),
+                   CommandHandler('start', start_over)
+                   ],
         per_user=True
     )
     
@@ -3724,7 +3745,9 @@ def main() -> None:
             SELECTING_MANAGER_LEVEL: [CallbackQueryHandler(handle_manager_level, pattern="^level_")],
             SELECTING_DISCIPLINE: [CallbackQueryHandler(handle_discipline, pattern="^disc_")],
         },
-        fallbacks=[CallbackQueryHandler(cancel_auth, pattern="^cancel_auth$")],
+        fallbacks=[CallbackQueryHandler(cancel_auth, pattern="^cancel_auth$"),
+                   CommandHandler('start', start_over)
+                   ],
         per_user=True, per_chat=True, allow_reentry=True
     )
     roster_conv_handler = ConversationHandler(
@@ -3733,7 +3756,10 @@ def main() -> None:
         AWAITING_ROLES_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_role_counts)],
         CONFIRM_ROSTER: [CallbackQueryHandler(save_roster, pattern="^confirm_roster$")],
     },
-    fallbacks=[CallbackQueryHandler(cancel_roster_submission, pattern="^cancel_roster$")],
+    fallbacks=[
+    CallbackQueryHandler(cancel_roster_submission, pattern="^cancel_roster$"),
+    CommandHandler('start', start_over)  # <-- ДОБАВЛЕНО
+],
     per_user=True
 )
 
@@ -3766,9 +3792,10 @@ def main() -> None:
             CONFIRM_REPORT: [CallbackQueryHandler(submit_report, pattern="^submit_report$")],
         },
         fallbacks=[
-            CallbackQueryHandler(cancel_report, pattern="^cancel_report$"),
-            CallbackQueryHandler(go_back_in_report_creation, pattern="^back_to_")
-        ],
+             CallbackQueryHandler(cancel_report, pattern="^cancel_report$"),
+             CallbackQueryHandler(go_back_in_report_creation, pattern="^back_to_"),
+             CommandHandler('start', start_over)  # <-- ДОБАВЛЕНО
+],
         per_user=True, per_chat=True, allow_reentry=True
     )
 
