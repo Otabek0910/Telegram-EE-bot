@@ -1,0 +1,9 @@
+python-telegram-bot[job-queue]
+pandas
+matplotlib
+SQLAlchemy
+openpyxl
+pytz
+apscheduler
+psycopg2-binary
+gunicorn
