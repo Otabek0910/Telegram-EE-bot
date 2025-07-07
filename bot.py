@@ -111,7 +111,7 @@ def init_db():
         '''CREATE TABLE daily_rosters (
             id SERIAL PRIMARY KEY,
             roster_date DATE NOT NULL,
-            brigade_user_id VARCHAR(255) NOT NULL REFERENCES brigades(user_id),
+            brigade_user_id VARCHAR(255) NOT NULL REFERENCES brigades(user_id) ON DELETE CASCADE,
             total_people INTEGER NOT NULL,
             UNIQUE (roster_date, brigade_user_id)
         )''',
@@ -375,6 +375,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception as e:
             logger.info(f"Не удалось удалить /start в группе (возможно, нет прав): {e}")
 
+async def remove_message_job(context: ContextTypes.DEFAULT_TYPE):
+    """Задача для удаления сообщения по расписанию."""
+    job_data = context.job.data
+    chat_id = job_data['chat_id']
+    message_id = job_data['message_id']
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+        logger.info(f"Сообщение {message_id} в чате {chat_id} удалено по расписанию.")
+    except Exception as e:
+        logger.warning(f"Не удалось удалить сообщение {message_id} по расписанию: {e}")
 
 async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str, chat_id: int, message_id_to_edit: int = None, greeting: str = None):
     """
@@ -387,7 +397,7 @@ async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str,
     roster_summary_text = "" 
 
     # Проверяем, подал ли бригадир табель на сегодня
-    if user_role['isForeman'] or user_id == OWNER_ID:
+    if user_role['isForeman']:
         today_str = date.today().strftime('%Y-%m-%d')
         roster_info = db_query("SELECT id, total_people FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
         
@@ -412,10 +422,10 @@ async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str,
 
     # --- Остальная часть функции ---
     # Кнопку "Подать табель" показываем, только если табель еще НЕ подан
-    if (user_role['isForeman'] or user_id == OWNER_ID) and not roster_summary_text:
+    if (user_role['isForeman']) and not roster_summary_text:
          keyboard_buttons.append([InlineKeyboardButton("📋 Подать табель на сегодня", callback_data="submit_roster")])
 
-    if user_role['isForeman'] or user_id == OWNER_ID:
+    if user_role['isForeman']:
         keyboard_buttons.append([InlineKeyboardButton("📝 Формировать отчет", callback_data="new_report")])
 
     if any([user_role['isManager'], user_role['isPto'], user_role['isKiok'], user_role['isForeman']]):
@@ -706,11 +716,11 @@ async def handle_db_restore_file(update: Update, context: ContextTypes.DEFAULT_T
 
     table_order = [
         'disciplines', 'construction_objects', 'work_types', 'admins', 
-        'managers', 'brigades', 'pto', 'kiok', 'reports', 'topic_mappings'
+        'managers', 'brigades', 'pto', 'kiok', 'reports', 'topic_mappings', 'personnel_roles', 'daily_rosters', 'daily_roster_details'
     ]
     
     # Таблицы, у которых есть автоинкрементный ID
-    serial_pk_tables = ['disciplines', 'construction_objects', 'work_types', 'reports']
+    serial_pk_tables = ['disciplines', 'construction_objects', 'work_types', 'reports', 'personnel_roles', 'daily_rosters', 'daily_roster_details']
 
     engine = create_engine(DATABASE_URL)
     xls = None
@@ -1370,18 +1380,18 @@ async def save_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     # 2. Сохраняем детализацию
     if roster_id:
-        roles_map = {name: role_id for role_id, name in db_query("SELECT id, role_name FROM personnel_roles")}
-        for role_name, count in roster_summary['details'].items():
-            role_id = roles_map.get(role_name)
-            if role_id:
-                db_query(
-                    "INSERT INTO daily_roster_details (roster_id, role_id, people_count) VALUES (%s, %s, %s)",
-                    (roster_id, role_id, count)
-                )
-
-        await query.edit_message_text("✅ *Табель на сегодня успешно принят!*")
+        # Редактируем сообщение о подтверждении
+        confirmation_message = await query.edit_message_text("✅ *Табель на сегодня успешно принят!*")
+        
+        # <<< НОВЫЙ БЛОК: Ставим задачу на удаление через 24 часа >>>
+        context.job_queue.run_once(
+            remove_message_job, 
+            when=timedelta(hours=24), 
+            data={'chat_id': query.message.chat_id, 'message_id': confirmation_message.message_id},
+            name=f"delete_{query.message.chat_id}_{confirmation_message.message_id}"
+        )
+        
         await show_main_menu_logic(context, user_id, query.message.chat_id)
-
     else:
         await query.edit_message_text("❌ Произошла критическая ошибка при сохранении табеля.")
 
@@ -2371,7 +2381,7 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
     try:
         table_names = [
             'reports', 'managers', 'brigades', 'pto', 'kiok', 'admins', 
-            'disciplines', 'construction_objects', 'work_types', 'topic_mappings'
+            'disciplines', 'construction_objects', 'work_types', 'topic_mappings', 'personnel_roles', 'daily_rosters', 'daily_roster_details'
         ]
         current_date_str = date.today().strftime('%Y-%m-%d')
         
@@ -3258,40 +3268,109 @@ async def get_directories_template(update: Update, context: ContextTypes.DEFAULT
             os.remove(file_path)
 
 async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Формирует и отправляет отчет по составу персонала на текущий день."""
+    """Показывает сводку по персоналу на сегодня, с кнопками для детализации."""
     query = update.callback_query
     await query.answer()
-    
-    user_id = str(query.from_user.id)
-    user_role = check_user_role(user_id)
-    
-    # Проверка прав доступа
-    if not (user_role.get('isManager') or user_role.get('isAdmin') or user_role.get('isPto')):
-        await query.answer("⛔️ У вас нет прав для этого действия.", show_alert=True)
-        return
-
-    await query.edit_message_text("⏳ Собираю данные по персоналу на сегодня...")
+    await query.edit_message_text("⏳ Собираю данные по персоналу...")
 
     today_str = date.today().strftime('%Y-%m-%d')
-    header = f"👥 *Статус персонала на {date.today().strftime('%d.%m.%Y')}*\n"
-    final_text = ""
     
     try:
-        # Определяем фильтр по дисциплине в зависимости от роли
-        discipline_filter_sql = ""
-        params = [today_str]
-        if user_role.get('managerLevel') == 2: # Руководитель 2-го уровня
-            discipline_name = user_role.get('discipline')
-            discipline_filter_sql = "WHERE d.name = %s"
-            params.append(discipline_name)
-            header = f"👥 *Статус персонала по дисциплине «{discipline_name}»*\n"
+        # Запрос для общей сводки по дисциплинам
+        summary_query = """
+            SELECT d.name, SUM(dr.total_people) as total
+            FROM daily_rosters dr
+            JOIN brigades b ON dr.brigade_user_id = b.user_id
+            JOIN disciplines d ON b.discipline = d.id
+            WHERE dr.roster_date = %s
+            GROUP BY d.name
+            ORDER BY d.name;
+        """
+        discipline_summary = db_query(summary_query, (today_str,))
 
-        # Основной SQL-запрос
-        # Он объединяет утренний табель с данными о бригаде и считает, сколько людей уже задействовано в отчетах
-        query_text = f"""
+        # Запрос для общей сводки по должностям
+        roles_summary_query = """
+            SELECT pr.role_name, SUM(drd.people_count) as total
+            FROM daily_roster_details drd
+            JOIN daily_rosters dr ON drd.roster_id = dr.id
+            JOIN personnel_roles pr ON drd.role_id = pr.id
+            WHERE dr.roster_date = %s
+            GROUP BY pr.role_name
+            ORDER BY pr.role_name;
+        """
+        roles_summary = db_query(roles_summary_query, (today_str,))
+        
+        # Формируем текст сообщения
+        message_lines = [f"👥 *Сводка по персоналу на {date.today().strftime('%d.%m.%Y')}*\n"]
+        
+        if discipline_summary:
+            message_lines.append("*По дисциплинам:*")
+            total_people = 0
+            for name, total in discipline_summary:
+                message_lines.append(f"  ▪️ {name}: *{total}* чел.")
+                total_people += total
+            message_lines.insert(1, f"*Общее количество заявленных людей: {total_people}*\n")
+        
+        if roles_summary:
+            message_lines.append("\n*По должностям:*")
+            for name, total in roles_summary:
+                message_lines.append(f"  ▪️ {name}: *{total}* чел.")
+
+        if not discipline_summary and not roles_summary:
+            message_lines.append("_На сегодня еще не было подано ни одного табеля._")
+
+        # Формируем кнопки для детализации
+        keyboard = []
+        if discipline_summary:
+            message_lines.append("\n\nВыберите дисциплину для детального просмотра:")
+            for name, _ in discipline_summary:
+                keyboard.append([InlineKeyboardButton(f"Детально по «{name}»", callback_data=f"personnel_detail_{name}")])
+
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")])
+        
+        await query.edit_message_text("\n".join(message_lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Ошибка при формировании статуса персонала: {e}")
+        await query.edit_message_text("❌ Произошла ошибка при сборе данных.")
+
+async def generate_discipline_personnel_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Генерирует детальный постраничный отчет по персоналу для конкретной дисциплины."""
+    query = update.callback_query
+    await query.answer()
+
+    # 1. Парсим callback_data: personnel_detail_{discipline_name}_{page}
+    parts = query.data.split('_')
+    discipline_name = parts[2]
+    # Если номер страницы не передан, считаем, что это первая страница
+    try:
+        page = int(parts[3])
+    except IndexError:
+        page = 1
+
+    await query.edit_message_text(f"⏳ Формирую детальный отчет для «{discipline_name}»...")
+
+    try:
+        today_str = date.today().strftime('%Y-%m-%d')
+        items_per_page = 10 # Количество бригад на одной странице
+        offset = (page - 1) * items_per_page
+
+        # 2. Сначала считаем общее количество бригад для этой дисциплины, подавших табель
+        count_query = """
+            SELECT COUNT(dr.id)
+            FROM daily_rosters dr
+            JOIN brigades b ON dr.brigade_user_id = b.user_id
+            JOIN disciplines d ON b.discipline = d.id
+            WHERE dr.roster_date = %s AND d.name = %s
+        """
+        total_items_raw = db_query(count_query, (today_str, discipline_name))
+        total_items = total_items_raw[0][0] if total_items_raw else 0
+        total_pages = math.ceil(total_items / items_per_page) if total_items > 0 else 1
+
+        # 3. Теперь получаем данные для текущей страницы
+        data_query = """
             SELECT 
                 b.brigade_name, 
-                d.name as discipline_name, 
                 dr.total_people,
                 (SELECT SUM(r.people_count) 
                  FROM reports r 
@@ -3299,45 +3378,44 @@ async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TY
             FROM daily_rosters dr
             JOIN brigades b ON dr.brigade_user_id = b.user_id
             JOIN disciplines d ON b.discipline = d.id
-            {discipline_filter_sql}
-            AND dr.roster_date = %s
-            ORDER BY d.name, b.brigade_name
+            WHERE dr.roster_date = %s AND d.name = %s
+            ORDER BY b.brigade_name
+            LIMIT %s OFFSET %s;
         """
-        # Корректируем параметры для запроса
-        # Если есть фильтр по дисциплине, то в запросе 2 плейсхолдера для даты и 1 для дисциплины
-        # Если нет, то только 2 для даты
-        query_params = (today_str,) + (params[1], today_str) if len(params) > 1 else (today_str, today_str)
+        roster_data = db_query(data_query, (today_str, today_str, discipline_name, items_per_page, offset))
 
-        roster_data = db_query(query_text, query_params)
-
+        # 4. Формируем текст сообщения
+        header = f"👥 *Детализация: «{discipline_name}»* (Стр. {page}/{total_pages})\n"
+        
         if not roster_data:
-            final_text = header + "\n_На сегодня еще не было подано ни одного табеля._"
+            message_text = header + "\n_Нет данных для отображения._"
         else:
-            text_by_discipline = {}
-            for brigade, discipline, total, assigned in roster_data:
-                assigned = assigned or 0 # Если отчетов нет, SUM вернет None, заменяем на 0
+            report_lines = []
+            for brigade, total, assigned in roster_data:
+                assigned = assigned or 0
                 reserve = total - assigned
-                
-                line = f"▪️ *{brigade}:* Заявлено: {total}, Занято: {assigned}, Резерв: {reserve}"
-                
-                if discipline not in text_by_discipline:
-                    text_by_discipline[discipline] = []
-                text_by_discipline[discipline].append(line)
+                report_lines.append(f"▪️ *{brigade}:* Заявлено: {total}, Занято: {assigned}, Резерв: {reserve}")
             
-            # Собираем итоговое сообщение
-            full_report_text = []
-            for discipline, lines in text_by_discipline.items():
-                full_report_text.append(f"\n*{discipline}:*")
-                full_report_text.extend(lines)
-            
-            final_text = header + "\n".join(full_report_text)
+            message_text = header + "\n".join(report_lines)
+
+        # 5. Собираем кнопки пагинации
+        nav_buttons = []
+        if page > 1:
+            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"personnel_detail_{discipline_name}_{page-1}"))
+        if page < total_pages:
+            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"personnel_detail_{discipline_name}_{page+1}"))
+        
+        keyboard = []
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+        
+        keyboard.append([InlineKeyboardButton("◀️ К общей сводке", callback_data="personnel_status")])
+        
+        await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     except Exception as e:
-        logger.error(f"Ошибка при формировании статуса персонала: {e}")
-        final_text = "❌ Произошла ошибка при сборе данных."
-
-    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")]]
-    await query.edit_message_text(final_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        logger.error(f"Ошибка при генерации детального отчета по персоналу: {e}")
+        await query.edit_message_text("❌ Произошла ошибка при формировании отчета.")
 
 # --- Доп функции - Формирование отчета бригадира ---
 async def prompt_for_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3707,6 +3785,8 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(back_to_main_menu, pattern="^go_back_to_main_menu$"))
     application.add_handler(CallbackQueryHandler(back_to_main_menu, pattern="^main_menu_from_profile$"))
     application.add_handler(CallbackQueryHandler(show_personnel_status, pattern="^personnel_status$"))
+    application.add_handler(CallbackQueryHandler(generate_discipline_personnel_report, pattern="^personnel_detail_"))
+    
     
     # Запускаем бота
     logger.info("Бот запущен...")
