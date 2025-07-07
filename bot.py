@@ -2937,6 +2937,20 @@ async def get_people_count_and_ask_volume(update: Update, context: ContextTypes.
         sent_message = await context.bot.send_message(chat_id, error_text, parse_mode="Markdown")
         context.user_data['last_bot_message_id'] = sent_message.message_id
         return GETTING_PEOPLE_COUNT
+    
+    last_bot_message_id = context.user_data.pop('last_bot_message_id', None)
+    if last_bot_message_id:
+        try: await context.bot.delete_message(chat_id=chat_id, message_id=last_bot_message_id)
+        except Exception as e: logger.warning(f"Не удалось удалить сообщение бота {last_bot_message_id}: {e}")
+    await update.message.delete()
+    try:
+        people_count = int(people_count_text)
+        if people_count <= 0: raise ValueError("Количество человек должно быть положительным числом.")
+    except ValueError:
+        error_text = "❗*Ошибка:* Пожалуйста, введите количество человек одним положительным числом (например: 5)."
+        sent_message = await context.bot.send_message(chat_id, error_text, parse_mode="Markdown")
+        context.user_data['last_bot_message_id'] = sent_message.message_id
+        return GETTING_PEOPLE_COUNT
 
     # <<< НАЧАЛО НОВОЙ ПРОВЕРКИ ПУЛА РАБОТНИКОВ >>>
     today_str = date.today().strftime('%Y-%m-%d')
@@ -2974,9 +2988,29 @@ async def get_people_count_and_ask_volume(update: Update, context: ContextTypes.
 
     # Если все проверки пройдены, продолжаем как обычно
     context.user_data['report_data']['people_count'] = people_count
-    
-    unit_of_measure = context.user_data['report_data'].get('unit_of_measure', '') 
-    volume_prompt = "📝 *Шаг 4: Укажите выполненный объем*"
+
+    # Проверяем, является ли работа "прочей"
+    work_type_name = context.user_data.get('report_data', {}).get('work_type', '')
+    if 'Прочие' in work_type_name:
+        logger.info(f"Для работы '{work_type_name}' объем не требуется. Пропускаем шаг.")
+        context.user_data['report_data']['volume'] = 0.0 # Автоматически ставим объем 0
+        
+        # Сразу переходим к запросу даты
+        keyboard = [
+            [InlineKeyboardButton("Сегодня", callback_data="set_date_today"), InlineKeyboardButton("Вчера", callback_data="set_date_yesterday")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cancel_report")]
+        ]
+        text = "📝 *Шаг 4 (пропущен): Укажите дату работ (ДД.ММ.ГГГГ)*"
+        sent_message = await context.bot.send_message(
+            chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+        )
+        context.user_data['last_bot_message_id'] = sent_message.message_id
+        return GETTING_DATE # Сразу переходим на шаг получения даты
+        
+    # Если работа обычная, все идет как и раньше
+    else:
+         unit_of_measure = context.user_data['report_data'].get('unit_of_measure', '') 
+         volume_prompt = "📝 *Шаг 4: Укажите выполненный объем*"
     if unit_of_measure:
         volume_prompt += f" *в {unit_of_measure}*:" 
     else:
@@ -3320,14 +3354,16 @@ async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TY
         # Формируем текст сообщения
         message_lines = [f"👥 *Сводка по персоналу на {date.today().strftime('%d.%m.%Y')}*\n"]
         
+        total_people = 0
         if discipline_summary:
-            message_lines.append("*По дисциплинам:*")
-            total_people = 0
-            for name, total in discipline_summary:
-                message_lines.append(f"  ▪️ {name}: *{total}* чел.")
+            for _, total in discipline_summary:
                 total_people += total
             message_lines.insert(1, f"*Общее количество заявленных людей: {total_people}*\n")
-        
+            
+            message_lines.append("*По дисциплинам:*")
+            for name, total in discipline_summary:
+                message_lines.append(f"  ▪️ {name}: *{total}* чел.")
+
         if roles_summary:
             message_lines.append("\n*По должностям:*")
             for name, total in roles_summary:
@@ -3341,7 +3377,7 @@ async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TY
         if discipline_summary:
             message_lines.append("\n\nВыберите дисциплину для детального просмотра:")
             for name, _ in discipline_summary:
-                keyboard.append([InlineKeyboardButton(f"Детально по «{name}»", callback_data=f"personnel_detail_{name}")])
+                keyboard.append([InlineKeyboardButton(f"Детально по «{name}»", callback_data=f"personnel_detail_{name}_1")]) # Добавляем _1 для первой страницы
 
         keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")])
         
@@ -3356,23 +3392,17 @@ async def generate_discipline_personnel_report(update: Update, context: ContextT
     query = update.callback_query
     await query.answer()
 
-    # 1. Парсим callback_data: personnel_detail_{discipline_name}_{page}
     parts = query.data.split('_')
     discipline_name = parts[2]
-    # Если номер страницы не передан, считаем, что это первая страница
-    try:
-        page = int(parts[3])
-    except IndexError:
-        page = 1
+    page = int(parts[3])
 
     await query.edit_message_text(f"⏳ Формирую детальный отчет для «{discipline_name}»...")
 
     try:
         today_str = date.today().strftime('%Y-%m-%d')
-        items_per_page = 10 # Количество бригад на одной странице
+        items_per_page = 10 
         offset = (page - 1) * items_per_page
 
-        # 2. Сначала считаем общее количество бригад для этой дисциплины, подавших табель
         count_query = """
             SELECT COUNT(dr.id)
             FROM daily_rosters dr
@@ -3384,7 +3414,6 @@ async def generate_discipline_personnel_report(update: Update, context: ContextT
         total_items = total_items_raw[0][0] if total_items_raw else 0
         total_pages = math.ceil(total_items / items_per_page) if total_items > 0 else 1
 
-        # 3. Теперь получаем данные для текущей страницы
         data_query = """
             SELECT 
                 b.brigade_name, 
@@ -3401,7 +3430,6 @@ async def generate_discipline_personnel_report(update: Update, context: ContextT
         """
         roster_data = db_query(data_query, (today_str, today_str, discipline_name, items_per_page, offset))
 
-        # 4. Формируем текст сообщения
         header = f"👥 *Детализация: «{discipline_name}»* (Стр. {page}/{total_pages})\n"
         
         if not roster_data:
@@ -3415,7 +3443,6 @@ async def generate_discipline_personnel_report(update: Update, context: ContextT
             
             message_text = header + "\n".join(report_lines)
 
-        # 5. Собираем кнопки пагинации
         nav_buttons = []
         if page > 1:
             nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"personnel_detail_{discipline_name}_{page-1}"))
