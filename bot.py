@@ -1,7 +1,6 @@
 # =============================================================================
 # ШАГ 1: ИМПОРТЫ
 # =============================================================================
-import sqlite3
 import logging
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -15,6 +14,8 @@ from datetime import datetime
 from datetime import date, timedelta
 from openpyxl.utils import get_column_letter
 import pandas as pd
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 from dotenv import load_dotenv
@@ -37,7 +38,6 @@ load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
 OWNER_ID = os.getenv("OWNER_ID")
-DB_NAME = 'bot_database.db'
 # Для локального тестирования используем эту строку. Для хостинга - закомментируем ее.
 # DATABASE_URL = "postgresql://postgres:9137911@localhost:5432/Bot_Telegram_Brigads" 
 DATABASE_URL = os.getenv("DATABASE_URL") # А эту раскомментируем для хостинга
@@ -2074,7 +2074,7 @@ async def export_reports_to_excel(update: Update, context: ContextTypes.DEFAULT_
         formatted_file_path = os.path.join(TEMP_DIR, f"formatted_report_{user_id}_{current_date_str}.xlsx")
         formatted_df = format_dataframe_for_excel(df.copy(), 'reports')
 
-        with pd.ExcelWriter(formatted_file_path, engine='openpyxl') as writer:
+        with pd.ExcelWriter(formatted_file_path, engine='xlsxwriter') as writer:
             formatted_df.to_excel(writer, sheet_name='Отчеты по работам', index=False)
             worksheet = writer.sheets['Отчеты по работам']
             

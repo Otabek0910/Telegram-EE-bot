@@ -7,3 +7,4 @@ pytz
 apscheduler
 psycopg2-binary
 gunicorn
+XlsxWriter
