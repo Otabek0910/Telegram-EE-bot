@@ -88,7 +88,7 @@ def init_db():
 
     # Команды для создания структуры БД
     create_commands = [
-        'DROP TABLE IF EXISTS admins, brigades, pto, reports, managers, kiok, construction_objects, work_types, disciplines, topic_mappings CASCADE',
+        'DROP TABLE IF EXISTS admins, brigades, pto, reports, managers, kiok, construction_objects, work_types, disciplines, topic_mappings, personnel_roles, daily_rosters, daily_roster_details CASCADE',
         '''CREATE TABLE disciplines (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE)''',
         '''CREATE TABLE construction_objects (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, display_order INTEGER DEFAULT 0)''',
         '''CREATE TABLE work_types (id SERIAL PRIMARY KEY, name TEXT NOT NULL, discipline_id INTEGER NOT NULL REFERENCES disciplines(id), unit_of_measure TEXT, norm_per_unit REAL, display_order INTEGER DEFAULT 0)''',
@@ -99,6 +99,29 @@ def init_db():
         '''CREATE TABLE kiok (user_id VARCHAR(255) PRIMARY KEY, discipline INTEGER REFERENCES disciplines(id), first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT)''',
         '''CREATE TABLE reports (id SERIAL PRIMARY KEY, timestamp TIMESTAMPTZ DEFAULT NOW(), corpus_name TEXT, discipline_name TEXT, work_type_name TEXT, foreman_name TEXT, people_count INTEGER, volume REAL, report_date DATE, notes TEXT, kiok_approved INTEGER DEFAULT 0, kiok_approver_id VARCHAR(255), kiok_approval_timestamp TIMESTAMPTZ, group_message_id BIGINT)''',
         '''CREATE TABLE topic_mappings (discipline_name TEXT PRIMARY KEY, chat_id BIGINT NOT NULL, topic_id INTEGER NOT NULL)'''
+        '''CREATE TABLE personnel_roles (
+            id SERIAL PRIMARY KEY,
+            role_name TEXT NOT NULL,
+            discipline_id INTEGER NOT NULL REFERENCES disciplines(id),
+            UNIQUE (role_name, discipline_id) 
+        )''',
+        
+        # "Шапка" ежедневного табеля от бригадира
+        '''CREATE TABLE daily_rosters (
+            id SERIAL PRIMARY KEY,
+            roster_date DATE NOT NULL,
+            brigade_user_id VARCHAR(255) NOT NULL REFERENCES brigades(user_id),
+            total_people INTEGER NOT NULL,
+            UNIQUE (roster_date, brigade_user_id)
+        )''',
+        
+        # Детализация табеля: сколько человек какой должности
+        '''CREATE TABLE daily_roster_details (
+            id SERIAL PRIMARY KEY,
+            roster_id INTEGER NOT NULL REFERENCES daily_rosters(id) ON DELETE CASCADE,
+            role_id INTEGER NOT NULL REFERENCES personnel_roles(id),
+            people_count INTEGER NOT NULL
+        )''',
     ]
     
     conn = None
@@ -134,6 +157,19 @@ def init_db():
         cursor.executemany("INSERT INTO work_types (name, discipline_id, unit_of_measure, norm_per_unit) VALUES (%s, %s, %s, %s)", initial_work_types)
         
         logger.info("Таблицы-справочники успешно наполнены данными.")
+
+         # --- НАПОЛНЕНИЕ НОВЫХ СПРАВОЧНИКОВ ---
+        initial_roles = [
+            # Для дисциплины 'Труба'
+            ('Сварщик', disciplines_map['Труба']),
+            ('Монтажник', disciplines_map['Труба']),
+            # Для остальных можно добавить общую должность
+            ('Работнки', disciplines_map['МК']),
+            ('Работник', disciplines_map['Общестрой']),
+            ('Работник', disciplines_map['Архитектура'])
+        ]
+        cursor.executemany("INSERT INTO personnel_roles (role_name, discipline_id) VALUES (%s, %s) ON CONFLICT (role_name, discipline_id) DO NOTHING", initial_roles)
+        logger.info("Справочник должностей успешно наполнен.")
 
         conn.commit()
         cursor.close()
