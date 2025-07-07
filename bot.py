@@ -2899,6 +2899,61 @@ async def submit_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     context.user_data.clear()
     return ConversationHandler.END
 
+async def get_directories_template(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Формирует и отправляет админу Excel-файл-шаблон для заполнения справочников."""
+    query = update.callback_query
+    await query.answer()
+    user_id = str(query.from_user.id)
+    
+    # Дополнительная проверка на права, на всякий случай
+    user_role = check_user_role(user_id)
+    if not user_role.get('isAdmin'):
+        await query.answer("⛔️ У вас нет прав для этого действия.", show_alert=True)
+        return
+
+    await query.edit_message_text("⏳ Создаю файл-шаблон для справочников...")
+    
+    file_path = None
+    try:
+        current_date_str = date.today().strftime('%Y-%m-%d')
+        file_path = os.path.join(TEMP_DIR, f"template_directories_{current_date_str}.xlsx")
+        
+        engine = create_engine(DATABASE_URL)
+        
+        # Используем openpyxl, так как сложное форматирование не нужно
+        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+            with engine.connect() as connection:
+                # Получаем текущие данные из справочников
+                df_disciplines = pd.read_sql_query(text("SELECT name FROM disciplines"), connection)
+                df_objects = pd.read_sql_query(text("SELECT name, display_order FROM construction_objects ORDER BY display_order"), connection)
+                
+                query_work_types = """
+                    SELECT wt.name, d.name as discipline_name, wt.unit_of_measure, wt.norm_per_unit
+                    FROM work_types wt
+                    JOIN disciplines d ON wt.discipline_id = d.id
+                    ORDER BY d.name, wt.display_order
+                """
+                df_work_types = pd.read_sql_query(text(query_work_types), connection)
+                
+                # Записываем на разные листы
+                df_disciplines.to_excel(writer, sheet_name='Дисциплины', index=False)
+                df_objects.to_excel(writer, sheet_name='Корпуса', index=False)
+                df_work_types.to_excel(writer, sheet_name='Виды работ', index=False)
+
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=open(file_path, 'rb'),
+            filename="Шаблон_справочников.xlsx",
+            caption="📄 Вот шаблон с текущими данными. Отредактируйте его и отправьте обратно, чтобы обновить справочники."
+        )
+        await query.message.delete()
+
+    except Exception as e:
+        logger.error(f"Ошибка при создании шаблона справочников: {e}")
+        await query.message.reply_text("❌ Произошла ошибка при создании файла-шаблона.")
+    finally:
+        if file_path and os.path.exists(file_path):
+            os.remove(file_path)
 # --- Доп функции - Формирование отчета бригадира ---
 async def prompt_for_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Запрашивает у пользователя текст примечания и сохраняет ID сообщения."""
