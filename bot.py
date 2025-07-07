@@ -2080,7 +2080,7 @@ async def export_reports_to_excel(update: Update, context: ContextTypes.DEFAULT_
             
             # <<< НАЧАЛО ИСПРАВЛЕНИЯ: Новый способ установки ширины колонок >>>
             for i, col in enumerate(formatted_df.columns):
-                column_len = max(formatted_df[col].astype(str).map(len).max(), len(col)) + 2
+                column_len = max(formatted_df[col].astype(str).map(len).max(default=0), len(col)) + 2
                 worksheet.set_column(i, i, column_len)
                 
             # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
@@ -2123,6 +2123,7 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
         
         engine = create_engine(DATABASE_URL)
 
+        # Создаем и отправляем raw файл
         raw_file_path = os.path.join(TEMP_DIR, f"raw_full_db_{user_id}_{current_date_str}.xlsx")
         with pd.ExcelWriter(raw_file_path, engine='xlsxwriter') as writer:
             with engine.connect() as connection:
@@ -2134,6 +2135,7 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
         
         await context.bot.send_document(chat_id=user_id, document=open(raw_file_path, 'rb'), filename=f"Полная_выгрузка_БД_raw_{current_date_str}.xlsx")
 
+        # Создаем и отправляем форматированный файл
         formatted_file_path = os.path.join(TEMP_DIR, f"formatted_full_db_{user_id}_{current_date_str}.xlsx")
         with pd.ExcelWriter(formatted_file_path, engine='xlsxwriter') as writer:
             with engine.connect() as connection:
@@ -2146,11 +2148,13 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
                         
                         worksheet = writer.sheets[table_name]
                         for i, col in enumerate(formatted_df.columns):
-                            column_len = max(formatted_df[col].astype(str).map(len).max(), len(col)) + 2
+                            # Устанавливаем ширину колонки по максимальной длине значения
+                            column_len = max(formatted_df[col].astype(str).map(len).max(default=0), len(col)) + 2
                             worksheet.set_column(i, i, column_len)
 
         await context.bot.send_document(chat_id=user_id, document=open(formatted_file_path, 'rb'), filename=f"Полная_выгрузка_БД_формат_{current_date_str}.xlsx")
         
+        # После завершения экспорта возвращаем пользователя в главное меню с уведомлением
         await show_main_menu_logic(context, user_id, chat_id, wait_msg.message_id, greeting="✅ Полный экспорт завершен.")
 
     except Exception as e:
@@ -2159,7 +2163,6 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
     finally:
         if raw_file_path and os.path.exists(raw_file_path): os.remove(raw_file_path)
         if formatted_file_path and os.path.exists(formatted_file_path): os.remove(formatted_file_path)
-
 def format_dataframe_for_excel(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
     """Приводит DataFrame в читаемый вид с учетом специфики каждой таблицы."""
     
