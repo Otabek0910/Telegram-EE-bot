@@ -67,7 +67,8 @@ logger = logging.getLogger(__name__)
 
 # Состояния для диалога регистрации
 SELECTING_ROLE, GETTING_NAME, GETTING_CONTACT, SELECTING_MANAGER_LEVEL, SELECTING_DISCIPLINE = range(5)
-# Состояния для диалога отчёта
+
+AWAITING_ROLES_COUNT, CONFIRM_ROSTER = range(20, 22) # Используем числа подальше, чтобы не пересеклись
 # Состояния для диалога отчёта
 OWNER_SELECTING_DISCIPLINE, GETTING_CORPUS, GETTING_WORK_TYPE, GETTING_PEOPLE_COUNT, GETTING_VOLUME, GETTING_DATE, GETTING_NOTES, CONFIRM_REPORT = range(5, 13)
 
@@ -387,6 +388,10 @@ async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str,
     # 📝 Формировать отчет: только для бригадиров и владельца
     if user_role['isForeman'] or user_id == OWNER_ID:
         keyboard_buttons.append([InlineKeyboardButton("📝 Формировать отчет", callback_data="new_report")])
+        # Добавьте этот блок сразу после предыдущего
+
+    if user_role['isForeman'] or user_id == OWNER_ID:
+        keyboard_buttons.append([InlineKeyboardButton("📋 Подать табель на сегодня", callback_data="submit_roster")])
     
     # 📊 Посмотреть отчеты: для всех, кроме неавторизованных
     # (Владелец тоже увидит, т.к. у него isManager=True)
@@ -1199,6 +1204,156 @@ async def cancel_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         message_id_to_edit=query.message.message_id
     )
 
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def start_roster_submission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начинает диалог подачи табеля."""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = str(query.from_user.id)
+    user_role = check_user_role(user_id)
+    discipline_name = user_role.get('discipline')
+    discipline_id = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))[0][0]
+
+    # Проверяем, не подавал ли он уже табель сегодня
+    today_str = date.today().strftime('%Y-%m-%d')
+    existing_roster = db_query("SELECT id FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
+    if existing_roster:
+        await query.edit_message_text(
+            "⚠️ Вы уже подавали табель на сегодня.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В главное меню", callback_data="go_back_to_main_menu")]])
+        )
+        return ConversationHandler.END
+
+    # Получаем список должностей для его дисциплины
+    roles = db_query("SELECT role_name FROM personnel_roles WHERE discipline_id = %s ORDER BY role_name", (discipline_id,))
+
+    if not roles:
+        await query.edit_message_text("⚠️ Для вашей дисциплины не настроены должности. Обратитесь к администратору.")
+        return ConversationHandler.END
+
+    role_names = [role[0] for role in roles]
+    context.user_data['available_roles'] = role_names # Сохраняем доступные должности
+
+    message_text = (
+        f"📋 *Подача табеля на {date.today().strftime('%d.%m.%Y')}*\n\n"
+        f"Пожалуйста, введите количество человек для каждой должности.\n"
+        f"Пример:\n`Сварщик 5, Монтажник 10`\n\n"
+        f"Доступные должности для вашей дисциплины *«{discipline_name}»*:\n"
+        f"▪️ " + "\n▪️ ".join(role_names)
+    )
+
+    await query.edit_message_text(text=message_text, parse_mode="Markdown")
+
+    return AWAITING_ROLES_COUNT
+
+async def get_role_counts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает введенное количество по должностям."""
+    user_input = update.message.text
+    user_id = str(update.effective_user.id)
+
+    parsed_roles = {}
+    total_people = 0
+    available_roles = context.user_data.get('available_roles', [])
+
+    try:
+        # Парсим строку вида "Должность1 Кол-во1, Должность2 Кол-во2"
+        parts = [part.strip() for part in user_input.split(',')]
+        for part in parts:
+            # Находим последнее слово - это должно быть число
+            *role_name_parts, count_str = part.split()
+            role_name = " ".join(role_name_parts)
+            count = int(count_str)
+
+            # Проверяем, что должность существует и количество положительное
+            if role_name in available_roles and count > 0:
+                parsed_roles[role_name] = count
+                total_people += count
+            else:
+                raise ValueError(f"Некорректная должность или количество для '{role_name}'.")
+
+        if not parsed_roles:
+            raise ValueError("Не удалось распознать ни одной должности.")
+
+        # Сохраняем данные для подтверждения
+        context.user_data['roster_summary'] = {
+            'details': parsed_roles,
+            'total': total_people
+        }
+
+        summary_text = ["*Проверьте данные:*\n"]
+        for role, count in parsed_roles.items():
+            summary_text.append(f"▪️ {role}: {count} чел.")
+        summary_text.append(f"\n*Итого: {total_people} чел.*")
+
+        keyboard = [
+            [InlineKeyboardButton("✅ Все верно, подтвердить", callback_data="confirm_roster")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cancel_roster")]
+        ]
+        await update.message.reply_text(
+            "\n".join(summary_text),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return CONFIRM_ROSTER
+
+    except (ValueError, IndexError) as e:
+        logger.warning(f"Ошибка парсинга табеля от {user_id}: {e}")
+        await update.message.reply_text(
+            "❌ *Ошибка формата!* Пожалуйста, введите данные строго по примеру:\n"
+            "`Должность 1 Количество, Должность 2 Количество`\n\n"
+            "Например:\n`Сварщик 5, Монтажник 10`"
+        )
+        return AWAITING_ROLES_COUNT # Остаемся на том же шаге
+
+async def save_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Сохраняет подтвержденный табель в базу данных."""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = str(query.from_user.id)
+    roster_summary = context.user_data.get('roster_summary')
+
+    if not roster_summary:
+        await query.edit_message_text("Произошла ошибка, данные не найдены. Попробуйте снова.")
+        return ConversationHandler.END
+
+    today_str = date.today().strftime('%Y-%m-%d')
+    total_people = roster_summary['total']
+
+    # 1. Сохраняем "шапку" табеля
+    roster_id = db_query(
+        "INSERT INTO daily_rosters (roster_date, brigade_user_id, total_people) VALUES (%s, %s, %s) RETURNING id",
+        (today_str, user_id, total_people)
+    )
+
+    # 2. Сохраняем детализацию
+    if roster_id:
+        roles_map = {name: role_id for role_id, name in db_query("SELECT id, role_name FROM personnel_roles")}
+        for role_name, count in roster_summary['details'].items():
+            role_id = roles_map.get(role_name)
+            if role_id:
+                db_query(
+                    "INSERT INTO daily_roster_details (roster_id, role_id, people_count) VALUES (%s, %s, %s)",
+                    (roster_id, role_id, count)
+                )
+
+        await query.edit_message_text("✅ *Табель на сегодня успешно принят!*")
+        await show_main_menu_logic(context, user_id, query.message.chat_id)
+
+    else:
+        await query.edit_message_text("❌ Произошла критическая ошибка при сохранении табеля.")
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel_roster_submission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отменяет диалог подачи табеля."""
+    query = update.callback_query
+    await query.answer("Отменено")
+    await show_main_menu_logic(context, str(query.from_user.id), query.message.chat_id, query.message.message_id)
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -3308,6 +3463,15 @@ def main() -> None:
         fallbacks=[CallbackQueryHandler(cancel_auth, pattern="^cancel_auth$")],
         per_user=True, per_chat=True, allow_reentry=True
     )
+    roster_conv_handler = ConversationHandler(
+    entry_points=[CallbackQueryHandler(start_roster_submission, pattern="^submit_roster$")],
+    states={
+        AWAITING_ROLES_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_role_counts)],
+        CONFIRM_ROSTER: [CallbackQueryHandler(save_roster, pattern="^confirm_roster$")],
+    },
+    fallbacks=[CallbackQueryHandler(cancel_roster_submission, pattern="^cancel_roster$")],
+    per_user=True
+)
 
     report_conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_report, pattern="^new_report$")],
@@ -3347,6 +3511,7 @@ def main() -> None:
     application.add_handler(restore_conv_handler)
     application.add_handler(conv_handler)
     application.add_handler(report_conv_handler)
+    application.add_handler(roster_conv_handler)
     
     # ... (здесь все остальные твои `application.add_handler(...)` без изменений) ...
     application.add_handler(CommandHandler("start", start))
