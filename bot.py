@@ -1364,7 +1364,7 @@ async def get_role_counts(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return AWAITING_ROLES_COUNT
 
 async def save_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Сохраняет подтвержденный табель в базу данных."""
+    """Сохраняет подтвержденный табель в базу данных, включая детали."""
     query = update.callback_query
     await query.answer()
 
@@ -1377,19 +1377,31 @@ async def save_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     today_str = date.today().strftime('%Y-%m-%d')
     total_people = roster_summary['total']
-
+    
     # 1. Сохраняем "шапку" табеля
     roster_id = db_query(
         "INSERT INTO daily_rosters (roster_date, brigade_user_id, total_people) VALUES (%s, %s, %s) RETURNING id",
         (today_str, user_id, total_people)
     )
-
+    
     # 2. Сохраняем детализацию
     if roster_id:
-        # Редактируем сообщение о подтверждении
-        confirmation_message = await query.edit_message_text("✅ *Табель на сегодня успешно принят!*")
+        roles_map_raw = db_query("SELECT id, role_name FROM personnel_roles")
+        roles_map = {name: role_id for role_id, name in roles_map_raw} if roles_map_raw else {}
         
-        # <<< НОВЫЙ БЛОК: Ставим задачу на удаление через 24 часа >>>
+        details_to_save = roster_summary.get('details', {})
+        for role_name, count in details_to_save.items():
+            role_id = roles_map.get(role_name)
+            if role_id:
+                db_query(
+                    "INSERT INTO daily_roster_details (roster_id, role_id, people_count) VALUES (%s, %s, %s)",
+                    (roster_id, role_id, count)
+                )
+            else:
+                logger.warning(f"При сохранении табеля не найдена должность '{role_name}' в справочнике.")
+
+        # Редактируем сообщение о подтверждении и ставим таймер на удаление
+        confirmation_message = await query.edit_message_text("✅ *Табель на сегодня успешно принят!*")
         context.job_queue.run_once(
             remove_message_job, 
             when=timedelta(hours=24), 
@@ -1397,7 +1409,9 @@ async def save_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
             name=f"delete_{query.message.chat_id}_{confirmation_message.message_id}"
         )
         
+        # Показываем обновленное главное меню
         await show_main_menu_logic(context, user_id, query.message.chat_id)
+
     else:
         await query.edit_message_text("❌ Произошла критическая ошибка при сохранении табеля.")
 
