@@ -2912,12 +2912,17 @@ async def get_work_type_and_ask_count(update: Update, context: ContextTypes.DEFA
     return GETTING_PEOPLE_COUNT
 
 async def get_people_count_and_ask_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получает кол-во человек, ПРОВЕРЯЕТ ОСТАТОК, удаляет старые сообщения, запрашивает объем."""
+    """
+    Получает кол-во человек, ПРОВЕРЯЕТ ОСТАТОК, удаляет старые сообщения.
+    Если работа 'Прочая' - пропускает шаг объема и сразу спрашивает дату.
+    Иначе - запрашивает объем.
+    """
     chat_id = update.effective_chat.id
     user_id = str(update.effective_user.id)
     user_role = check_user_role(user_id)
     people_count_text = update.message.text
     
+    # Удаляем предыдущее сообщение бота ("введите кол-во")
     last_bot_message_id = context.user_data.pop('last_bot_message_id', None)
     if last_bot_message_id:
         try:
@@ -2925,71 +2930,45 @@ async def get_people_count_and_ask_volume(update: Update, context: ContextTypes.
         except Exception as e:
             logger.warning(f"Не удалось удалить сообщение бота {last_bot_message_id}: {e}")
     
+    # Удаляем сообщение пользователя с числом
     await update.message.delete()
 
+    # Проверяем, что введено корректное число
     try:
         people_count = int(people_count_text)
         if people_count <= 0:
             raise ValueError("Количество человек должно быть положительным числом.")
-        
-    except ValueError:
-        error_text = "❗*Ошибка:* Пожалуйста, введите количество человек одним положительным числом (например: 5)."
-        sent_message = await context.bot.send_message(chat_id, error_text, parse_mode="Markdown")
-        context.user_data['last_bot_message_id'] = sent_message.message_id
-        return GETTING_PEOPLE_COUNT
-    
-    last_bot_message_id = context.user_data.pop('last_bot_message_id', None)
-    if last_bot_message_id:
-        try: await context.bot.delete_message(chat_id=chat_id, message_id=last_bot_message_id)
-        except Exception as e: logger.warning(f"Не удалось удалить сообщение бота {last_bot_message_id}: {e}")
-    await update.message.delete()
-    try:
-        people_count = int(people_count_text)
-        if people_count <= 0: raise ValueError("Количество человек должно быть положительным числом.")
     except ValueError:
         error_text = "❗*Ошибка:* Пожалуйста, введите количество человек одним положительным числом (например: 5)."
         sent_message = await context.bot.send_message(chat_id, error_text, parse_mode="Markdown")
         context.user_data['last_bot_message_id'] = sent_message.message_id
         return GETTING_PEOPLE_COUNT
 
-    # <<< НАЧАЛО НОВОЙ ПРОВЕРКИ ПУЛА РАБОТНИКОВ >>>
+    # Проверяем пул работников
     today_str = date.today().strftime('%Y-%m-%d')
-    
-    # 1. Проверяем, был ли подан табель на сегодня
     roster_info = db_query("SELECT total_people FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
     
     if not roster_info:
         error_text = "⚠️ *Сначала нужно подать табель на сегодня!* \n\nВоспользуйтесь кнопкой в главном меню, чтобы заявить состав вашей бригады."
         keyboard = [[InlineKeyboardButton("🏠 В главное меню", callback_data="go_back_to_main_menu")]]
         await context.bot.send_message(chat_id, error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        return ConversationHandler.END # Прерываем создание отчета
+        return ConversationHandler.END
 
     total_declared = roster_info[0][0]
-
-    # 2. Считаем, сколько людей уже распределено по другим отчетам за сегодня
-    # Используем имя бригады из профиля для точного подсчета
-    brigade_name_for_query = user_role.get('brigadeName')
-    if not brigade_name_for_query:
-         # Запасной вариант, если имя бригады не найдено
-         brigade_name_for_query = f"Бригада пользователя {user_id}"
-
+    brigade_name_for_query = user_role.get('brigadeName') or f"Бригада пользователя {user_id}"
     assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name_for_query, today_str))
     total_assigned = assigned_info[0][0] or 0 if assigned_info else 0
-
-    # 3. Вычисляем доступный остаток и проверяем ввод
     available_pool = total_declared - total_assigned
     
     if people_count > available_pool:
         error_text = f"❌ *Ошибка!* Вы пытаетесь задействовать *{people_count}* чел., но в резерве осталось только *{available_pool}*.\n\nВведите корректное число."
         sent_message = await context.bot.send_message(chat_id, error_text, parse_mode="Markdown")
         context.user_data['last_bot_message_id'] = sent_message.message_id
-        return GETTING_PEOPLE_COUNT # Просим ввести число заново
-    # <<< КОНЕЦ НОВОЙ ПРОВЕРКИ >>>
-
-    # Если все проверки пройдены, продолжаем как обычно
+        return GETTING_PEOPLE_COUNT
+        
+    # Если все проверки пройдены, решаем, куда идти дальше
     context.user_data['report_data']['people_count'] = people_count
-
-    # Проверяем, является ли работа "прочей"
+    
     work_type_name = context.user_data.get('report_data', {}).get('work_type', '')
     if 'Прочие' in work_type_name:
         logger.info(f"Для работы '{work_type_name}' объем не требуется. Пропускаем шаг.")
@@ -3000,33 +2979,34 @@ async def get_people_count_and_ask_volume(update: Update, context: ContextTypes.
             [InlineKeyboardButton("Сегодня", callback_data="set_date_today"), InlineKeyboardButton("Вчера", callback_data="set_date_yesterday")],
             [InlineKeyboardButton("❌ Отмена", callback_data="cancel_report")]
         ]
-        text = "📝 *Шаг 4 (пропущен): Укажите дату работ (ДД.ММ.ГГГГ)*"
+        text = "📝 *Шаг 5: Укажите дату работ (или введите вручную ДД.ММ.ГГГГ)*"
         sent_message = await context.bot.send_message(
             chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
         )
         context.user_data['last_bot_message_id'] = sent_message.message_id
-        return GETTING_DATE # Сразу переходим на шаг получения даты
+        return GETTING_DATE
         
-    # Если работа обычная, все идет как и раньше
-    else:
-         unit_of_measure = context.user_data['report_data'].get('unit_of_measure', '') 
-         volume_prompt = "📝 *Шаг 4: Укажите выполненный объем*"
-    if unit_of_measure:
-        volume_prompt += f" *в {unit_of_measure}*:" 
-    else:
-        volume_prompt += ":" 
+    else: # Если работа обычная, запрашиваем объем
+        unit_of_measure = context.user_data['report_data'].get('unit_of_measure', '') 
+        volume_prompt = "📝 *Шаг 4: Укажите выполненный объем*"
+        if unit_of_measure:
+            volume_prompt += f" *в {unit_of_measure}*:" 
+        else:
+            volume_prompt += ":" 
 
-    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_ask_count")]]
-    
-    sent_message = await context.bot.send_message(
-        chat_id, 
-        volume_prompt, 
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
-    )
-    context.user_data['last_bot_message_id'] = sent_message.message_id
-
-    return GETTING_VOLUME
+        keyboard = [
+            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_ask_count")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="cancel_report")]
+        ]
+        
+        sent_message = await context.bot.send_message(
+            chat_id, 
+            volume_prompt, 
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
+        context.user_data['last_bot_message_id'] = sent_message.message_id
+        return GETTING_VOLUME
 
 async def get_volume_and_ask_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Получает объем, удаляет старые сообщения, запрашивает дату."""
@@ -3498,7 +3478,13 @@ async def skip_note_and_confirm(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def confirm_report_logic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отображает финальный отчет для подтверждения пользователем."""
-    chat_id = update.effective_chat.id
+    # <<< НАЧАЛО ИСПРАВЛЕНИЯ: Умное получение chat_id >>>
+    if update.callback_query:
+        chat_id = update.callback_query.message.chat_id
+    else:
+        chat_id = update.effective_chat.id
+    # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
+        
     data = context.user_data['report_data']
     
     summary_lines = [
@@ -3510,7 +3496,6 @@ async def confirm_report_logic(update: Update, context: ContextTypes.DEFAULT_TYP
         f"▪️ *Выполненный объем:* {data.get('volume')} {data.get('unit_of_measure', '')}"
     ]
     
-    # Добавляем примечание, если оно есть
     if data.get('notes'):
         summary_lines.append(f"▪️ *Примечание:* {data.get('notes')}")
 
@@ -3520,12 +3505,9 @@ async def confirm_report_logic(update: Update, context: ContextTypes.DEFAULT_TYP
         [InlineKeyboardButton("◀️ Назад (к дате)", callback_data="back_to_ask_date")]
     ]
     
-    # Определяем, редактировать сообщение или отправлять новое
     if update.callback_query:
         await update.callback_query.edit_message_text(summary_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
-        # Если примечание было введено текстом, предыдущее сообщение бота уже удалено
-        # Поэтому нужно отправить новое
         await context.bot.send_message(chat_id, summary_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     return CONFIRM_REPORT
