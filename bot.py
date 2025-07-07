@@ -2078,12 +2078,14 @@ async def export_reports_to_excel(update: Update, context: ContextTypes.DEFAULT_
             formatted_df.to_excel(writer, sheet_name='Отчеты по работам', index=False)
             worksheet = writer.sheets['Отчеты по работам']
             
-            # <<< НАЧАЛО ИСПРАВЛЕНИЯ: Новый способ установки ширины колонок >>>
             for i, col in enumerate(formatted_df.columns):
-                column_len = max(formatted_df[col].astype(str).map(len).max(default=0), len(col)) + 2
+                # Проверяем, не пуста ли колонка, перед тем как искать максимум
+                if not formatted_df[col].empty:
+                    max_len = formatted_df[col].astype(str).map(len).max()
+                else:
+                    max_len = 0
+                column_len = max(max_len, len(col)) + 2
                 worksheet.set_column(i, i, column_len)
-                
-            # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
 
         await context.bot.send_document(
             chat_id=chat_id, document=open(formatted_file_path, 'rb'), 
@@ -2099,8 +2101,6 @@ async def export_reports_to_excel(update: Update, context: ContextTypes.DEFAULT_
             os.remove(formatted_file_path)
 
 async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Эта функция из твоего кода уже была правильной, но для полноты вот она.
-    # Убедись, что у тебя стоит именно эта версия.
     query = update.callback_query
     await query.answer()
     chat_id = query.message.chat_id
@@ -2123,7 +2123,6 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
         
         engine = create_engine(DATABASE_URL)
 
-        # Создаем и отправляем raw файл
         raw_file_path = os.path.join(TEMP_DIR, f"raw_full_db_{user_id}_{current_date_str}.xlsx")
         with pd.ExcelWriter(raw_file_path, engine='xlsxwriter') as writer:
             with engine.connect() as connection:
@@ -2135,7 +2134,6 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
         
         await context.bot.send_document(chat_id=user_id, document=open(raw_file_path, 'rb'), filename=f"Полная_выгрузка_БД_raw_{current_date_str}.xlsx")
 
-        # Создаем и отправляем форматированный файл
         formatted_file_path = os.path.join(TEMP_DIR, f"formatted_full_db_{user_id}_{current_date_str}.xlsx")
         with pd.ExcelWriter(formatted_file_path, engine='xlsxwriter') as writer:
             with engine.connect() as connection:
@@ -2148,13 +2146,15 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
                         
                         worksheet = writer.sheets[table_name]
                         for i, col in enumerate(formatted_df.columns):
-                            # Устанавливаем ширину колонки по максимальной длине значения
-                            column_len = max(formatted_df[col].astype(str).map(len).max(default=0), len(col)) + 2
+                            if not formatted_df[col].empty:
+                                max_len = formatted_df[col].astype(str).map(len).max()
+                            else:
+                                max_len = 0
+                            column_len = max(max_len, len(col)) + 2
                             worksheet.set_column(i, i, column_len)
 
         await context.bot.send_document(chat_id=user_id, document=open(formatted_file_path, 'rb'), filename=f"Полная_выгрузка_БД_формат_{current_date_str}.xlsx")
         
-        # После завершения экспорта возвращаем пользователя в главное меню с уведомлением
         await show_main_menu_logic(context, user_id, chat_id, wait_msg.message_id, greeting="✅ Полный экспорт завершен.")
 
     except Exception as e:
@@ -2163,10 +2163,10 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
     finally:
         if raw_file_path and os.path.exists(raw_file_path): os.remove(raw_file_path)
         if formatted_file_path and os.path.exists(formatted_file_path): os.remove(formatted_file_path)
+
 def format_dataframe_for_excel(df: pd.DataFrame, table_name: str) -> pd.DataFrame:
     """Приводит DataFrame в читаемый вид с учетом специфики каждой таблицы."""
     
-    # Шаг 1: Универсальный словарь для переименования всех возможных колонок
     rename_map = {
         'id': 'ID', 'timestamp': 'Время создания', 'corpus_name': 'Корпус',
         'discipline_name': 'Дисциплина', 'work_type_name': 'Вид работ',
@@ -2179,71 +2179,29 @@ def format_dataframe_for_excel(df: pd.DataFrame, table_name: str) -> pd.DataFram
         'name': 'Название', 'discipline_id': 'ID Дисциплины', 'chat_id': 'ID Чата',
         'topic_id': 'ID Темы'
     }
-    df.rename(columns=rename_map, inplace=True)
+    df.rename(columns=rename_map, inplace=True, errors='ignore')
 
-    # Шаг 2: Применяем специфичное форматирование ТОЛЬКО для таблицы 'reports'
+    # Применяем специфичное форматирование ТОЛЬКО для таблицы 'reports'
     if table_name == 'reports':
-        # Заменяем статусы на текст
         if 'Статус КИОК' in df.columns:
             status_map = {0: 'Ожидает', 1: 'Согласовано', -1: 'Отклонено'}
             df['Статус КИОК'] = df['Статус КИОК'].map(status_map).fillna('Неизвестно')
         
-        # Форматируем даты
+        # Убираем информацию о часовом поясе
+        timezone_aware_columns = ['Время создания', 'Время согласования']
+        for col in timezone_aware_columns:
+            if col in df.columns and pd.api.types.is_datetime64_any_dtype(df[col]):
+                if df[col].dt.tz is not None:
+                     df[col] = df[col].dt.tz_localize(None)
+
+        # Форматируем даты в строки ПОСЛЕ удаления таймзоны
         date_columns = ['Время создания', 'Время согласования']
         for col in date_columns:
             if col in df.columns:
                 df[col] = pd.to_datetime(df[col], errors='coerce').dt.strftime('%d.%m.%Y %H:%M').fillna('')
     
-    # В будущем сюда можно будет добавить блоки elif для других таблиц, если понадобится
-    
     return df
-
-# --- Редактирование данных Дисциплина, корпус, вид работ (admin)--- #1
-async def get_directories_template(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Формирует и отправляет Excel-файл со справочниками из PostgreSQL."""
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat_id
-    user_id = str(query.from_user.id)
-        
-    await query.edit_message_text(text="⏳ Формирую шаблон со справочниками...")
-
-    user_role = check_user_role(user_id)
-    if not user_role.get('isAdmin'):
-        await query.edit_message_text(text="⛔️ У вас нет прав для выполнения этой команды.")
-        return
-        
-    file_path = os.path.join(TEMP_DIR, f"template_{user_id}.xlsx")
-    
-    try:
-        engine = create_engine(DATABASE_URL)
-        with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-            with engine.connect() as connection:
-                # Дисциплины
-                pd.read_sql_query(text("SELECT name FROM disciplines"), connection).to_excel(writer, sheet_name='Дисциплины', index=False)
-                # Корпуса
-                pd.read_sql_query(text("SELECT name, display_order FROM construction_objects ORDER BY display_order ASC, name ASC"), connection).to_excel(writer, sheet_name='Корпуса', index=False)
-                # Виды работ
-                query_wt = """
-                    SELECT wt.name, d.name as discipline_name, wt.unit_of_measure, wt.norm_per_unit, wt.display_order
-                    FROM work_types wt JOIN disciplines d ON wt.discipline_id = d.id
-                    ORDER BY wt.display_order ASC, wt.name ASC
-                """
-                pd.read_sql_query(text(query_wt), connection).to_excel(writer, sheet_name='Виды работ', index=False)
-        
-        await context.bot.send_document(
-            chat_id=chat_id, document=open(file_path, 'rb'),
-            filename="Шаблон_справочников.xlsx",
-            caption="Вот актуальные справочники. Для обновления данных отредактируйте файл и отправьте его обратно боту."
-        )
-        await query.delete_message()
-    except Exception as e:
-        logger.error(f"Ошибка при создании шаблона справочников: {e}")
-        await query.edit_message_text("❌ Произошла ошибка при формировании файла.")
-    finally:
-        if os.path.exists(file_path):
-            os.remove(file_path)
-    
+ 
 async def handle_directories_excel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает загруженный Excel-файл, добавляя новые записи в справочники PostgreSQL."""
     # Проверяем, что сообщение содержит документ и что это Excel-файл
