@@ -46,6 +46,12 @@ NORM_PER_PERSON = 5 # Условная норма выработки на чел
 USERS_PER_PAGE = 10
 ELEMENTS_PER_PAGE = 10
 
+ALL_TABLE_NAMES_FOR_BACKUP = [
+    'disciplines', 'construction_objects', 'work_types', 'admins', 'managers', 
+    'brigades', 'pto', 'kiok', 'reports', 'topic_mappings', 'personnel_roles', 
+    'daily_rosters', 'daily_roster_details'
+]
+
 TEMP_DIR = 'temp_files'
 DASHBOARD_DIR = 'dashboards'
 BACKUP_DIR = 'database_backups'      # <<< НОВАЯ ПАПКА ДЛЯ БЭКАПОВ
@@ -551,7 +557,7 @@ async def download_db_backup(update: Update, context: ContextTypes.DEFAULT_TYPE)
     file_path = os.path.join(TEMP_DIR, f"full_backup_{date.today()}.xlsx")
     
     try:
-        table_names = ['disciplines', 'construction_objects', 'work_types', 'admins', 'managers', 'brigades', 'pto', 'kiok', 'reports', 'topic_mappings']
+        table_names = table_names = ALL_TABLE_NAMES_FOR_BACKUP
         engine = create_engine(DATABASE_URL)
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
             with engine.connect() as connection:
@@ -631,7 +637,7 @@ async def daily_backup() -> None:
     file_path = os.path.join(BACKUP_DIR, backup_filename)
     
     try:
-        table_names = ['disciplines', 'construction_objects', 'work_types', 'admins', 'managers', 'brigades', 'pto', 'kiok', 'reports', 'topic_mappings']
+        table_names = table_names = ALL_TABLE_NAMES_FOR_BACKUP
         engine = create_engine(DATABASE_URL)
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
             with engine.connect() as connection:
@@ -2379,10 +2385,7 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
     raw_file_path = None
     formatted_file_path = None
     try:
-        table_names = [
-            'reports', 'managers', 'brigades', 'pto', 'kiok', 'admins', 
-            'disciplines', 'construction_objects', 'work_types', 'topic_mappings', 'personnel_roles', 'daily_rosters', 'daily_roster_details'
-        ]
+        table_names = ALL_TABLE_NAMES_FOR_BACKUP
         current_date_str = date.today().strftime('%Y-%m-%d')
         
         engine = create_engine(DATABASE_URL)
