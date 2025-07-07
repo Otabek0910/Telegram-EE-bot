@@ -485,14 +485,22 @@ async def download_db_backup(update: Update, context: ContextTypes.DEFAULT_TYPE)
         with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
             with engine.connect() as connection:
                 for table_name in table_names:
-                    # Проверяем существование таблицы перед чтением
                     query_check_table = text("SELECT EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename  = :table_name)")
                     if connection.execute(query_check_table, {'table_name': table_name}).scalar():
                         df = pd.read_sql_query(text(f"SELECT * FROM {table_name}"), connection)
+                        
+                        # <<< ВОТ ИСПРАВЛЕНИЕ: Добавляем очистку дат >>>
+                        if table_name == 'reports':
+                            timezone_cols = ['timestamp', 'kiok_approval_timestamp']
+                            for col in timezone_cols:
+                                if col in df.columns and pd.api.types.is_datetime64_any_dtype(df[col]):
+                                    if df[col].dt.tz is not None:
+                                        df[col] = df[col].dt.tz_localize(None)
+                        # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
+                        
                         df.to_excel(writer, sheet_name=table_name, index=False)
                     else:
                         logger.warning(f"Таблица {table_name} не найдена в БД, пропущена в бэкапе.")
-        # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
         
         await context.bot.send_document(
             chat_id=OWNER_ID,
@@ -2136,6 +2144,7 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
         
         engine = create_engine(DATABASE_URL)
 
+        # Создаем и отправляем raw файл
         raw_file_path = os.path.join(TEMP_DIR, f"raw_full_db_{user_id}_{current_date_str}.xlsx")
         with pd.ExcelWriter(raw_file_path, engine='xlsxwriter') as writer:
             with engine.connect() as connection:
@@ -2143,10 +2152,21 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
                     query_check_table = text("SELECT EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename  = :table_name)")
                     if connection.execute(query_check_table, {'table_name': table_name}).scalar():
                         df = pd.read_sql_query(text(f"SELECT * FROM {table_name}"), connection)
+                        
+                        # <<< ИСПРАВЛЕНИЕ ДЛЯ RAW ФАЙЛА: Очищаем даты >>>
+                        if table_name == 'reports':
+                            timezone_cols = ['timestamp', 'kiok_approval_timestamp']
+                            for col in timezone_cols:
+                                if col in df.columns and pd.api.types.is_datetime64_any_dtype(df[col]):
+                                    if df[col].dt.tz is not None:
+                                        df[col] = df[col].dt.tz_localize(None)
+                        # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
+
                         df.to_excel(writer, sheet_name=table_name, index=False)
         
         await context.bot.send_document(chat_id=user_id, document=open(raw_file_path, 'rb'), filename=f"Полная_выгрузка_БД_raw_{current_date_str}.xlsx")
 
+        # Создаем и отправляем форматированный файл
         formatted_file_path = os.path.join(TEMP_DIR, f"formatted_full_db_{user_id}_{current_date_str}.xlsx")
         with pd.ExcelWriter(formatted_file_path, engine='xlsxwriter') as writer:
             with engine.connect() as connection:
@@ -2159,6 +2179,7 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
                         
                         worksheet = writer.sheets[table_name]
                         for i, col in enumerate(formatted_df.columns):
+                            # Исправленный расчет ширины
                             if not formatted_df[col].empty:
                                 max_len = formatted_df[col].astype(str).map(len).max()
                             else:
