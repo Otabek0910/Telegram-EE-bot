@@ -558,13 +558,26 @@ async def daily_backup() -> None:
             with engine.connect() as connection:
                 for table_name in table_names:
                     df = pd.read_sql_query(text(f"SELECT * FROM {table_name}"), connection)
+                    
+                    # <<< ВОТ ИСПРАВЛЕНИЕ: Добавляем очистку дат >>>
+                    if table_name == 'reports':
+                        # Указываем колонки, в которых могут быть даты с таймзоной
+                        timezone_cols = ['timestamp', 'kiok_approval_timestamp']
+                        for col in timezone_cols:
+                            if col in df.columns and pd.api.types.is_datetime64_any_dtype(df[col]):
+                                # Если у колонки есть таймзона, убираем ее
+                                if df[col].dt.tz is not None:
+                                    df[col] = df[col].dt.tz_localize(None)
+                    # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
+
                     df.to_excel(writer, sheet_name=table_name, index=False)
+
         logger.info(f"Резервная копия успешно создана: {file_path}")
     except Exception as e:
         logger.error(f"Ошибка при создании ежедневного бэкапа: {e}")
         return
 
-    # 2. Очистка старых бэкапов
+    # 2. Очистка старых бэкапов (этот блок без изменений)
     try:
         now = datetime.now()
         retention_period = timedelta(days=BACKUP_RETENTION_DAYS)
