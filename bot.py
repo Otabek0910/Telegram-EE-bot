@@ -2138,7 +2138,7 @@ async def export_full_db_to_excel(update: Update, context: ContextTypes.DEFAULT_
         await context.bot.send_document(chat_id=user_id, document=open(raw_file_path, 'rb'), filename=f"Полная_выгрузка_БД_raw_{current_date_str}.xlsx")
 
         formatted_file_path = os.path.join(TEMP_DIR, f"formatted_full_db_{user_id}_{current_date_str}.xlsx")
-        with pd.ExcelWriter(formatted_file_path, engine='openpyxl') as writer:
+        with pd.ExcelWriter(formatted_file_path, engine='xlsxwriter') as writer:
             with engine.connect() as connection:
                 for table_name in table_names:
                     query_check_table = text("SELECT EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename  = :table_name)")
