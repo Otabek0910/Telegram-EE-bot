@@ -1893,12 +1893,9 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         with engine.connect() as connection:
             df = pd.read_sql_query(text(pd_query), connection, params={'today': today_str})
 
-        # ИЗМЕНЕНИЕ 1: Добавляем эмодзи к заголовку здесь
         message_lines = [f"📊 *{get_text('overview_summary_title', lang)}*"]
         
         all_disciplines = [row[0] for row in db_query("SELECT name FROM disciplines ORDER BY name")]
-        
-        # Список дисциплин, по которым были поданы отчеты
         reported_disciplines = df['discipline_name'].unique().tolist() if not df.empty else []
 
         if not all_disciplines:
@@ -1915,62 +1912,55 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                 disc_df = df[df['discipline_name'] == disc_name] if not df.empty else pd.DataFrame()
                 
                 if not disc_df.empty:
-                    has_any_reports = True
-                    # ИЗМЕНЕНИЕ 2: Добавляем пустую строку перед новой дисциплиной с отчетами
-                    # Это предотвратит двойные пустые строки, если первая дисциплина уже имеет данные
-                    if message_lines[-1] != f"📊 *{get_text('overview_summary_title', lang)}*": 
-                         message_lines.append("")
+                     has_any_reports = True
+                     if i > 0 and message_lines[-1] != f"📊 *{get_text('overview_summary_title', lang)}*":
+                        message_lines.append("")
 
-                    # Считаем общие показатели по дисциплине
-                    total_people = disc_df['people_count'].sum()
-                    avg_performance = (disc_df['volume'].sum() / disc_df['planned_volume'].sum() * 100) if disc_df['planned_volume'].sum() > 0 else 0
-                    
-
-                    
-                    message_lines.append(
-                        get_text('overview_discipline_summary', lang).format(
-                            discipline=get_data_translation(disc_name, lang),
-                            people=int(total_people),
-                            performance=f"{avg_performance:.1f}"
-                        )
+                     total_people = disc_df['people_count'].sum()
+                     avg_performance = (
+                        (disc_df['volume'].sum() / disc_df['planned_volume'].sum() * 100)
+                        if disc_df['planned_volume'].sum() > 0 else 0
                     )
                     
+                     message_lines.append(
+                        f"🔹 *{get_data_translation(disc_name, lang)}*\n"
+                        f"{get_text('overview_discipline_summary', lang).format(discipline='', people=int(total_people), performance=f'{avg_performance:.1f}')}"
+                    )
+
                     # Считаем разбивку по видам работ
-                    work_summary = disc_df.groupby('work_type_name').agg(
+                     work_summary = disc_df.groupby('work_type_name').agg(
                         total_fact=('volume', 'sum'),
                         total_plan=('planned_volume', 'sum')
                     ).reset_index()
-                    work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
+                     work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 0)) * 100
         
 
-                    for _, row in work_summary.iterrows():
-                        message_lines.append(get_text('overview_work_type_line', lang).format(
-                            work_type=get_data_translation(row['work_type_name'], lang),
-                            fact=row['total_fact'],
-                            plan=row['total_plan'],
-                            percent=row['percent']
-                        ))
+                     for _, row in work_summary.iterrows():
+                        message_lines.append(
+                            f"• {get_data_translation(row['work_type_name'], lang)} — "
+                            f"{row['total_fact']:.1f} / {row['total_plan']:.1f} "
+                            f"({row['percent']:.1f}%)"
+                        )
             
             # ИЗМЕНЕНИЕ 3: Добавляем сообщение о дисциплинах без отчетов, если таковые были
-            unreported_disciplines_exist = any(d not in reported_disciplines for d in all_disciplines)
-            if unreported_disciplines_exist:
-                if has_any_reports: # Добавляем пустую строку, если перед этим были отчеты по другим дисциплинам
-                     message_lines.append("")
-                message_lines.append(get_text('no_reports_for_other_disciplines', lang))
+            unreported_exist = any(d not in reported_disciplines for d in all_disciplines)
+            if unreported_exist:
+                if has_any_reports:
+                    message_lines.append("")
+                message_lines.append(f"⚠️ {get_text('no_reports_for_other_disciplines', lang)}")
 
         # ИЗМЕНЕНИЕ 4: Добавляем пустую строку перед последним запросом выбора графика
         if len(message_lines) > 1: # Убедимся, что это не только заголовок или пустое сообщение
             message_lines.append("")
-        message_lines.append(get_text('overview_select_chart_prompt', lang))
-        
+        message_lines.append(f"➡️ {get_text('overview_select_chart_prompt', lang)}")
+
         # Формируем кнопки
-        keyboard_buttons = []
-        if all_disciplines:
-            for discipline_name in all_disciplines:
-                keyboard_buttons.append([InlineKeyboardButton(f"Дашборд «{get_data_translation(discipline_name, lang)}»", callback_data=f"gen_overview_chart_{discipline_name}")])
-        
-        keyboard_buttons.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="report_menu_all")])
-        
+        keyboard_buttons = [
+            [InlineKeyboardButton(f"📈 {get_data_translation(discipline_name, lang)}", callback_data=f"gen_overview_chart_{discipline_name}")]
+            for discipline_name in all_disciplines
+        ]
+        keyboard_buttons.append([InlineKeyboardButton(f"🔙 {get_text('back_button', lang)}", callback_data="report_menu_all")])
+
         await query.edit_message_text(
             text="\n".join(message_lines),
             reply_markup=InlineKeyboardMarkup(keyboard_buttons),
@@ -1980,7 +1970,6 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
     except Exception as e:
         logger.error(f"Ошибка в show_overview_dashboard_menu: {e}")
         await query.edit_message_text(f"❌ {get_text('error_generic', lang)}")
-
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str) -> None:
     """Генерирует дашборд выработки для КОНКРЕТНОЙ дисциплины из PostgreSQL."""
     query = update.callback_query
@@ -4586,6 +4575,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(show_profile, pattern="^show_profile$"))
     application.add_handler(CallbackQueryHandler(report_menu, pattern="^report_menu_"))
     application.add_handler(CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview$"))
+    application.add_handler(CallbackQueryHandler(report_menu, pattern="^report_menu_all$"))
     application.add_handler(CallbackQueryHandler(lambda u, c: generate_overview_chart(u, c, discipline_name=u.callback_query.data.split('_')[-1]), pattern="^gen_overview_chart_"))
     #application.add_handler(CallbackQueryHandler(show_problem_brigades_menu, pattern="^report_underperforming$"))
     application.add_handler(CallbackQueryHandler(handle_problem_brigades_button, pattern="^handle_problem_brigades_button$"))
@@ -4622,7 +4612,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(show_hr_menu, pattern="^hr_menu$"))
     application.add_handler(CallbackQueryHandler(show_paginated_brigade_report, pattern="^hr_report_"))
     application.add_handler(CallbackQueryHandler(select_language_menu, pattern="^select_language$"))
-    application.add_handler(CallbackQueryHandler(generate_overview_chart, pattern="^report_overview$"))
+    
           
     # Запускаем бота
     logger.info("Бот запущен...")
