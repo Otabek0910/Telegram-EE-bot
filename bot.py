@@ -505,19 +505,22 @@ async def force_user_to_main_menu(context: ContextTypes.DEFAULT_TYPE, user_id: s
     Принудительно отправляет пользователю новое главное меню, удаляя старое сообщение, если нужно.
     """
     try:
-        # Очищаем временные данные диалога
-        if (int(user_id), int(user_id)) in context.user_data:
-            context.user_data[(int(user_id), int(user_id))].clear()
-
-        # Если передан ID старого сообщения (меню), удаляем его
+        # Улучшенная очистка временных данных диалога для целевого пользователя:
+        # context._application.user_data[int(user_id)] — это правильный способ доступа к user_data другого пользователя.
+        if int(user_id) in context._application.user_data:
+            context._application.user_data[int(user_id)].clear()
+            logger.info(f"Очищены context.user_data для {user_id}")
+            
+        # Удаляем сообщение, которое мы хотим заменить (если оно передано)
         if message_to_delete_id:
             try:
                 await context.bot.delete_message(chat_id=user_id, message_id=message_to_delete_id)
-            except Exception:
-                pass # Игнорируем ошибку, если сообщение уже удалено
+                logger.info(f"Удалено старое сообщение {message_to_delete_id} для {user_id}")
+            except Exception as e:
+                logger.warning(f"Не удалось удалить старое сообщение {message_to_delete_id} для {user_id}: {e}")
 
         # Отправляем новое чистое меню
-        await show_main_menu_logic(context, user_id, user_id, greeting=greeting)
+        await show_main_menu_logic(context, user_id, int(user_id), greeting=greeting) # chat_id должен быть int
         logger.info(f"Пользователю {user_id} было принудительно показано главное меню.")
     except Exception as e:
         logger.error(f"Не удалось принудительно обновить меню для {user_id}: {e}")
@@ -2202,6 +2205,7 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
     try:
         today_str = date.today().strftime('%Y-%m-%d')
         
+        # Бригадиры, которые не сдали отчет
         non_reporters_query = """
             SELECT b.brigade_name 
             FROM brigades b
@@ -2216,8 +2220,10 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
 
         low_performers = set()
         engine = create_engine(DATABASE_URL)
+        
+        # ИСПРАВЛЕНИЕ: Заменяем wt.work_type_name на wt.name в запросе
         pd_query = """
-            SELECT r.foreman_name, r.people_count, r.volume, wt.norm_per_unit, wt.work_type_name
+            SELECT r.foreman_name, r.people_count, r.volume, wt.norm_per_unit, wt.name as work_type_name_alias
             FROM reports r 
             JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
             WHERE r.discipline_name = :discipline_name AND r.report_date = :today
@@ -2226,7 +2232,8 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
             df = pd.read_sql_query(text(pd_query), connection, params={'discipline_name': discipline_name, 'today': today_str})
 
         if not df.empty:
-            performance_df = df[~df['work_type_name'].str.contains('Прочие', case=False, na=False)].copy()
+            # Используем work_type_name_alias для дальнейшей обработки
+            performance_df = df[~df['work_type_name_alias'].str.contains('Прочие', case=False, na=False)].copy()
             if not performance_df.empty:
                 performance_df['planned_volume'] = pd.to_numeric(performance_df['people_count'], errors='coerce') * pd.to_numeric(performance_df['norm_per_unit'], errors='coerce')
                 performance_df['output_percentage'] = 100.0
@@ -2549,8 +2556,11 @@ async def set_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # 2. Пытаемся уведомить пользователя и сбросить его состояние/табель
     try:
-        context._application.user_data.pop(int(user_id_to_edit), None)
-        logger.info(f"Состояние для пользователя {user_id_to_edit} было полностью сброшено из-за смены дисциплины.")
+        # Правильный доступ к user_data другого пользователя:
+        if int(user_id_to_edit) in context._application.user_data:
+            context._application.user_data[int(user_id_to_edit)].clear()
+            logger.info(f"Состояние для пользователя {user_id_to_edit} было полностью сброшено из-за смены дисциплины.")
+            
         if role == 'brigades':
             today_str = date.today().strftime('%Y-%m-%d')
             db_query("DELETE FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id_to_edit, today_str))
@@ -2559,15 +2569,19 @@ async def set_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (new_discipline_id,))
         new_discipline_name = discipline_name_raw[0][0] if discipline_name_raw else "Неизвестно"
         greeting_text = f"⚙️ Администратор изменил вашу дисциплину на «{new_discipline_name}». Пожалуйста, подайте табель заново, если уже делали это сегодня."
-        await force_user_to_main_menu(context, user_id_to_edit, greeting_text)
+        
+        # Отправляем новое сообщение с основным меню пользователю
+        await show_main_menu_logic(context, user_id_to_edit, int(user_id_to_edit), greeting=greeting_text)
+        
     except Exception as e:
          logger.error(f"Не удалось уведомить пользователя {user_id_to_edit} о смене дисциплины. Ошибка: {e}")
 
-    # 3. Просто редактируем сообщение админа с подтверждением
+    # 3. Редактируем сообщение админа, чтобы показать подтверждение и кнопки возврата
     keyboard = [[InlineKeyboardButton(f"◀️ Назад к списку", callback_data=f"list_users_{role}_1")]]
     await query.edit_message_text(
-        text=f"✅ Дисциплина изменена.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        text=f"✅ Дисциплина изменена для `{user_id_to_edit}`.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
     )
 
 # --- EXCEL---
@@ -3039,17 +3053,23 @@ async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # 1. Удаляем пользователя из БД
     db_query(f"DELETE FROM {role_to_delete} WHERE user_id = %s", (user_id_to_delete,))
+    logger.info(f"Пользователь {user_id_to_delete} удален из роли {role_to_delete} администратором {query.from_user.id}")
     
     # 2. Пытаемся уведомить пользователя и сбросить его состояние
     try:
-        context._application.user_data.pop(int(user_id_to_delete), None)
-        logger.info(f"Состояние для пользователя {user_id_to_delete} было полностью сброшено администратором.")
+        # Правильный доступ к user_data другого пользователя:
+        if int(user_id_to_delete) in context._application.user_data:
+            context._application.user_data[int(user_id_to_delete)].clear()
+            logger.info(f"Состояние для пользователя {user_id_to_delete} было полностью сброшено администратором.")
+        
         greeting_text = "⚠️ Ваша роль была удалена администратором. Для дальнейшей работы пройдите авторизацию заново."
-        await force_user_to_main_menu(context, user_id_to_delete, greeting_text)
+        # Отправляем новое сообщение с основным меню пользователю
+        await show_main_menu_logic(context, user_id_to_delete, int(user_id_to_delete), greeting=greeting_text)
+        
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя {user_id_to_delete} об удалении. Возможно, бот заблокирован. Ошибка: {e}")
 
-    # 3. Просто редактируем сообщение админа с подтверждением
+    # 3. Редактируем сообщение админа с подтверждением
     keyboard = [[InlineKeyboardButton(f"◀️ Назад к списку", callback_data=f"list_users_{role_to_delete}_1")]]
     await query.edit_message_text(
         text=f"✅ Пользователь `{user_id_to_delete}` удален.",
@@ -3066,21 +3086,31 @@ async def set_new_discipline_for_manager(update: Update, context: ContextTypes.D
     user_id_to_edit = context.user_data.get('edit_user_id')
     
     if not user_id_to_edit:
+        # Это сообщение показывается, если edit_user_id пропал из context.user_data
         await query.edit_message_text("❌ Ошибка: сессия истекла. Попробуйте снова.")
         return ConversationHandler.END
 
     db_query("UPDATE managers SET level = 2, discipline = %s WHERE user_id = %s", (new_discipline_id, user_id_to_edit))
     
-    # === ИЗМЕНЕНИЕ: Принудительно удаляем состояние пользователя из памяти бота ===
+    # Принудительно удаляем состояние пользователя из памяти бота
     context._application.user_data.pop(int(user_id_to_edit), None)
     logger.info(f"Состояние для пользователя {user_id_to_edit} было полностью сброшено из-за смены уровня на 2.")
     
+    # Уведомляем пользователя, чья роль была изменена
     greeting_text = "⚙️ Администратор присвоил вам Уровень 2 и назначил новую дисциплину."
-    # === ИЗМЕНЕНИЕ: Убран некорректный message_id ===
     await force_user_to_main_menu(context, user_id_to_edit, greeting_text)
 
-    await query.edit_message_text(f"✅ Руководителю `{user_id_to_edit}` присвоен *Уровень 2* и новая дисциплина.")
+    # <<< ИЗМЕНЕНИЕ ДЛЯ ВЛАДЕЛЬЦА/АДМИНА >>>
+    # Получаем имя дисциплины для отображения
+    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (new_discipline_id,))
+    new_discipline_name = discipline_name_raw[0][0] if discipline_name_raw else "Неизвестно"
     
+    # Редактируем сообщение для админа/овнера, подтверждая действие
+    await query.edit_message_text(
+        f"✅ Руководителю `{user_id_to_edit}` присвоен *Уровень 2* и дисциплина «*{new_discipline_name}*»."
+    )
+    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
+
     context.user_data.clear()
     return ConversationHandler.END
 
