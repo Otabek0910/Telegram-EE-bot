@@ -3775,22 +3775,26 @@ async def show_hr_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     keyboard.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="report_menu_all")])
     await query.edit_message_text("\n".join(message_lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
+# Код для полной замены
+
 async def show_paginated_brigade_report(update: Update, context: ContextTypes.DEFAULT_TYPE, start_date_override: date = None, end_date_override: date = None) -> None:
     """ФИНАЛЬНЫЙ универсальный постраничный отчет по бригадам."""
     query = update.callback_query
+    
+    # Определяем user_id и lang в самом начале
+    if query:
+        user_id = str(query.from_user.id)
+    else: 
+        user_id = str(update.effective_user.id)
+    lang = get_user_language(user_id)
 
-    # Определяем, как была вызвана функция
+    # Отвечаем на запрос и показываем сообщение о загрузке
     if query:
         await query.answer()
-        user_id = str(query.from_user.id)
-        await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang=get_user_language(user_id))}")
-    else:
-        user_id = str(update.effective_user.id)
-        # Если вызвано из ConversationHandler, удаляем сообщение с запросом даты
+        await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
+    else: # Вызвано из ConversationHandler
         await context.bot.delete_message(chat_id=user_id, message_id=context.user_data.pop('last_bot_message_id', None))
         await update.message.delete()
-
-    lang = get_user_language(user_id)
 
     # --- Определяем параметры отчета ---
     page = 1
@@ -3803,29 +3807,45 @@ async def show_paginated_brigade_report(update: Update, context: ContextTypes.DE
         discipline_name = parts[3]
         page = int(parts[4])
         context.user_data['hr_discipline_filter'] = discipline_name
-        if period == 'yesterday': report_date = date.today() - timedelta(days=1)
-
-    if start_date_override: report_date = start_date_override
+        if period == 'yesterday': 
+            report_date = date.today() - timedelta(days=1)
+    
+    if start_date_override: 
+        report_date = start_date_override
+        # Для пагинации нам нужно знать, какой сейчас период
+        period = report_date.strftime('%Y-%m-%d')
 
     report_date_str = report_date.strftime('%Y-%m-%d')
-
+    
     # 1. Запрос на получение всех бригад для пагинации
-    brigades_q = db_query("SELECT b.brigade_name FROM daily_rosters dr JOIN brigades b ON dr.brigade_user_id = b.user_id JOIN disciplines d ON b.discipline = d.id WHERE dr.roster_date = %s AND d.name = %s ORDER BY b.brigade_name", (report_date_str, discipline_name))
+    brigades_q = db_query(
+        "SELECT b.brigade_name FROM daily_rosters dr JOIN brigades b ON dr.brigade_user_id = b.user_id JOIN disciplines d ON b.discipline = d.id WHERE dr.roster_date = %s AND d.name = %s ORDER BY b.brigade_name",
+        (report_date_str, discipline_name)
+    )
     all_brigades = [row[0] for row in brigades_q] if brigades_q else []
-
+    
     # 2. Пагинация
     items_per_page = 5
     total_pages = math.ceil(len(all_brigades) / items_per_page) if all_brigades else 1
-    page = max(1, min(page, total_pages)) # Защита от неверного номера страницы
+    page = max(1, min(page, total_pages))
     start_index = (page - 1) * items_per_page
     brigades_on_page = all_brigades[start_index : start_index + items_per_page]
 
     # 3. Собираем детальную информацию
     brigade_reports = {}
     for b_name in brigades_on_page:
-        details_q = db_query("SELECT dr.total_people, pr.role_name, drd.people_count FROM daily_rosters dr JOIN daily_roster_details drd ON dr.id = drd.roster_id JOIN personnel_roles pr ON drd.role_id = pr.id WHERE dr.roster_date = %s AND dr.brigade_user_id = (SELECT user_id FROM brigades WHERE brigade_name = %s)", (report_date_str, b_name))
+        details_q = db_query("""
+            SELECT dr.total_people, pr.role_name, drd.people_count
+            FROM daily_rosters dr
+            JOIN brigades b ON dr.brigade_user_id = b.user_id
+            JOIN daily_roster_details drd ON dr.id = drd.roster_id
+            JOIN personnel_roles pr ON drd.role_id = pr.id
+            WHERE dr.roster_date = %s AND b.brigade_name = %s
+        """, (report_date_str, b_name))
+        
         if details_q:
-            brigade_reports[b_name] = {'total': details_q[0][0], 'roles': [f"  - {role}: {count}" for _, role, count in details_q]}
+            # ИСПРАВЛЕНИЕ: Переводим названия должностей
+            brigade_reports[b_name] = {'total': details_q[0][0], 'roles': [f"  - {get_data_translation(role, lang)}: {count}" for _, role, count in details_q]}
 
     # 4. Формируем сообщение
     disc_summary_q = db_query("SELECT SUM(dr.total_people), COUNT(DISTINCT dr.brigade_user_id) FROM daily_rosters dr JOIN brigades b ON dr.brigade_user_id = b.user_id JOIN disciplines d ON b.discipline = d.id WHERE dr.roster_date = %s AND d.name = %s", (report_date_str, discipline_name))
@@ -3839,16 +3859,23 @@ async def show_paginated_brigade_report(update: Update, context: ContextTypes.DE
     else:
         for i, brigade_name in enumerate(brigades_on_page, start=start_index + 1):
             data = brigade_reports.get(brigade_name, {'total': 'N/A', 'roles': []})
-            message_lines.append(f"\n*{i}. {brigade_name}* ({get_text('total_declared', lang).format(total=data['total'])})")
+            message_lines.append(f"\n*{i}. {get_data_translation(brigade_name, lang)}* ({get_text('total_declared', lang).format(total=data['total'])})")
             message_lines.extend(data['roles'])
 
     # 5. Формируем кнопки
     keyboard = []
-    period_str = 'today' if report_date == date.today() else 'yesterday'
+    # Определяем текущий период для callback'ов пагинации
+    if isinstance(report_date, date) and report_date == date.today():
+        current_period_for_callback = 'today'
+    elif isinstance(report_date, date) and report_date == date.today() - timedelta(days=1):
+        current_period_for_callback = 'yesterday'
+    else:
+        current_period_for_callback = report_date.strftime('%Y-%m-%d')
+
 
     pagination_buttons = []
-    if page > 1: pagination_buttons.append(InlineKeyboardButton("◀️", callback_data=f"hr_report_{period_str}_{discipline_name}_{page - 1}"))
-    if page < total_pages: pagination_buttons.append(InlineKeyboardButton("▶️", callback_data=f"hr_report_{period_str}_{discipline_name}_{page + 1}"))
+    if page > 1: pagination_buttons.append(InlineKeyboardButton("◀️", callback_data=f"hr_report_{current_period_for_callback}_{discipline_name}_{page - 1}"))
+    if page < total_pages: pagination_buttons.append(InlineKeyboardButton("▶️", callback_data=f"hr_report_{current_period_for_callback}_{discipline_name}_{page + 1}"))
     if pagination_buttons: keyboard.append(pagination_buttons)
 
     date_buttons = [
@@ -3859,8 +3886,14 @@ async def show_paginated_brigade_report(update: Update, context: ContextTypes.DE
     keyboard.append(date_buttons)
     keyboard.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="hr_menu")])
 
-    await query.edit_message_text("\n".join(message_lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-
+    # Редактируем сообщение, которое показали в самом начале ("Пожалуйста, подождите...")
+    await context.bot.edit_message_text(
+        chat_id=query.message.chat_id if query else user_id,
+        message_id=query.message.message_id if query else None,
+        text="\n".join(message_lines), 
+        reply_markup=InlineKeyboardMarkup(keyboard), 
+        parse_mode="Markdown"
+    )
 async def get_hr_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Запрашивает дату для отчета по персоналу."""
     query = update.callback_query
@@ -4452,9 +4485,8 @@ def main() -> None:
     application.add_handler(CommandHandler("language", select_language_menu))
     application.add_handler(CallbackQueryHandler(set_language_callback, pattern="^set_lang_"))
     application.add_handler(CallbackQueryHandler(show_hr_menu, pattern="^hr_menu$"))
-
     application.add_handler(CallbackQueryHandler(show_paginated_brigade_report, pattern="^hr_report_"))
-    
+  
           
     # Запускаем бота
     logger.info("Бот запущен...")
