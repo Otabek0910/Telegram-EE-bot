@@ -4512,7 +4512,6 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(back_to_main_menu, pattern="^go_back_to_main_menu$"))
     application.add_handler(CallbackQueryHandler(back_to_main_menu, pattern="^main_menu_from_profile$"))
     application.add_handler(CallbackQueryHandler(show_personnel_status, pattern="^personnel_status$"))
-    application.add_handler(CallbackQueryHandler(show_personnel_history_menu, pattern="^personnel_history_menu$"))
     application.add_handler(CallbackQueryHandler(generate_discipline_personnel_report, pattern="^personnel_detail_"))
     application.add_handler(CallbackQueryHandler(list_reports_for_deletion, pattern="^delete_report_list_"))
     application.add_handler(CallbackQueryHandler(confirm_delete_report, pattern="^confirm_delete_"))
