@@ -1864,7 +1864,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # Код для полной замены
 async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отображает сводку План/Факт по всем дисциплинам с выбором графика."""
+    """Отображает сводку План / Факт по всем дисциплинам с выбором графика."""
     query = update.callback_query
     await query.answer()
 
@@ -1872,6 +1872,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
     lang = get_user_language(user_id)
     user_role = check_user_role(user_id)
 
+    # Если роль — обычный пользователь без выбора дисциплины
     if user_role.get('discipline') and not (user_role.get('isAdmin') or user_role.get('managerLevel') == 1):
         await generate_overview_chart(update, context, discipline_name=user_role.get('discipline'))
         return
@@ -1888,10 +1889,11 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
             JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
             WHERE r.report_date = :today
         """
+
         with engine.connect() as connection:
             df = pd.read_sql_query(text(pd_query), connection, params={'today': today_str})
 
-        message_lines = [f"*Сводка План / Факт — сегодня*"]
+        message_lines = [f"*📊 Сводка План / Факт — сегодня*"]
 
         all_disciplines = [row[0] for row in db_query("SELECT name FROM disciplines ORDER BY name")]
         reported_disciplines = df['discipline_name'].unique().tolist() if not df.empty else []
@@ -1900,25 +1902,27 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
         for discipline in all_disciplines:
             disc_df = df[df['discipline_name'] == discipline] if not df.empty else pd.DataFrame()
-            
+
             if not disc_df.empty:
                 has_any_reports = True
 
+                # Добавляем planned_volume для корректной работы
                 disc_df['planned_volume'] = disc_df['people_count'] * disc_df['norm_per_unit']
 
                 total_people = int(disc_df['people_count'].sum())
-                total_plan = (disc_df['people_count'] * disc_df['norm_per_unit']).sum()
+                total_plan = disc_df['planned_volume'].sum()
                 total_fact = disc_df['volume'].sum()
                 avg_performance = int((total_fact / total_plan * 100) if total_plan > 0 else 0)
 
                 message_lines.append("")
-                message_lines.append(f"**{get_data_translation(discipline, lang)}**")
-                message_lines.append(f"{total_people} человек | Выработка: **{avg_performance}%**")
+                message_lines.append(f"*{get_data_translation(discipline, lang)}*")
+                message_lines.append(f"_Численность:_ **{total_people}** чел.  |  _Выработка:_ **{avg_performance}%**")
 
                 work_summary = disc_df.groupby('work_type_name').agg(
                     total_fact=('volume', 'sum'),
                     total_plan=('planned_volume', 'sum')
                 ).reset_index()
+
                 work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
 
                 for _, row in work_summary.iterrows():
@@ -1926,7 +1930,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                     fact = round(row['total_fact'], 1)
                     plan = round(row['total_plan'], 1)
                     percent = int(row['percent'])
-                    message_lines.append(f"— {work_type} — **{fact}** / **{plan}** (**{percent}%**)")
+                    message_lines.append(f"— _{work_type}_ — **{fact}** / **{plan}** (**{percent}%**)")
 
                 message_lines.append("───────────────")
 
@@ -1936,13 +1940,14 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
             message_lines.append("───────────────")
 
         message_lines.append("")
-        message_lines.append("*Выберите дисциплину для графика:*")
+        message_lines.append("*Выберите дисциплину для просмотра графика:*")
 
         keyboard_buttons = [
             [InlineKeyboardButton(get_data_translation(name, lang), callback_data=f"gen_overview_chart_{name}")]
             for name in all_disciplines
         ]
-        keyboard_buttons.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="report_menu_all")])
+
+        keyboard_buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")])
 
         await query.edit_message_text(
             text="\n".join(message_lines),
@@ -1952,7 +1957,11 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
     except Exception as e:
         logger.error(f"Ошибка в show_overview_dashboard_menu: {e}")
-        await query.edit_message_text(f"❌ {get_text('error_generic', lang)}")
+        try:
+            await query.edit_message_text("❗ *Произошла ошибка при формировании сводки.*\n_Пожалуйста, попробуйте позже._", parse_mode="Markdown")
+        except:
+            pass
+
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str) -> None:
     """Генерирует дашборд выработки для КОНКРЕТНОЙ дисциплины из PostgreSQL."""
     query = update.callback_query
