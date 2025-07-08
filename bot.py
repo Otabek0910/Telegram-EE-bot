@@ -1966,7 +1966,10 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     user_id = str(query.from_user.id)
     lang = get_user_language(user_id)
     
-    await query.edit_message_text(f"⏳ *{escape_markdown(get_text('generating_dashboard_for', lang).format(discipline=get_data_translation(discipline_name, lang)), version=2)}*", parse_mode='MarkdownV2')
+    await query.edit_message_text(
+        f"⏳ {escape_markdown(get_text('generating_dashboard_for', lang).format(discipline=get_data_translation(discipline_name, lang)), version=2)}",
+        parse_mode='MarkdownV2'
+    )
     
     try:
         engine = create_engine(DATABASE_URL)
@@ -1978,7 +1981,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         """
         with engine.connect() as connection:
             reports_df = pd.read_sql_query(text(query_text), connection, params={'discipline_name': discipline_name})
-    
+
         if reports_df.empty:
             keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] 
             await query.edit_message_text(
