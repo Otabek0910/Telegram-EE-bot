@@ -1874,7 +1874,6 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
     # Если у пользователя есть закрепленная дисциплина, сразу показываем его график
     if user_role.get('discipline') and not (user_role.get('isAdmin') or user_role.get('managerLevel') == 1):
-        # Вызов другой функции, не требующей изменений в рамках текущей задачи
         await generate_overview_chart(update, context, discipline_name=user_role.get('discipline'))
         return
 
@@ -1949,7 +1948,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                 message_lines.append(
                     f"\n✨ *{escape_markdown(translated_discipline_name, version=2)}* "
                     f"\\({escape_markdown(get_text('total_label', lang), version=2)}: {escape_markdown(str(total_people), version=2)} {escape_markdown(get_text('people_label', lang), version=2)} \\| "
-                    f"{escape_markdown(get_text('avg_output_label', lang), version=2)}: {escape_markdown(f'{avg_performance_rounded:.1f}\\%', version=2)}\\)" # Процент экранируется
+                    f"{escape_markdown(get_text('avg_output_label', lang), version=2)}: {escape_markdown(f'{avg_performance_rounded:.1f}\\%', version=2)}\\)"
                 )
 
                 work_summary = disc_df.groupby('work_type_name').agg(
@@ -1957,7 +1956,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                     total_plan=('planned_volume', 'sum')
                 ).reset_index()
                 # Фильтруем виды работ, где сумма факта и плана > 0, чтобы избежать деления на ноль при расчете процента
-                work_summary = work_summary[work_summary['total_fact'] + work_summary['total_plan'] > 0] 
+                work_summary = work_summary[work_summary['total_fact'] + work_summary['total_plan'] > 0]
                 
                 # Защита от деления на ноль при расчете процента
                 work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
@@ -1975,7 +1974,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                         message_lines.append(
                             f"  ▪️ {escaped_work_type}: {escape_markdown(get_text('fact_short_label', lang), version=2)}: {escape_markdown(f'{fact:.1f}', version=2)} / "
                             f"{escape_markdown(get_text('plan_short_label', lang), version=2)}: {escape_markdown(f'{plan:.1f}', version=2)} / "
-                            f"{escape_markdown(get_text('output_short_label', lang), version=2)}: {escape_markdown(f'{percent:.1f}\\%', version=2)}" # Процент экранируется
+                            f"{escape_markdown(get_text('output_short_label', lang), version=2)}: {escape_markdown(f'{percent:.1f}\\%', version=2)}"
                         )
                 else: # Если work_summary пусто после фильтрации (например, только нулевые объемы)
                      message_lines.append(f"  _{escape_markdown(get_text('overview_no_detailed_data', lang), version=2)}_")
@@ -1995,22 +1994,22 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         keyboard_buttons = []
         for name in all_disciplines:
             # Убеждаемся, что название дисциплины в кнопке переводится и корректно отображается
-            keyboard_buttons.append([InlineKeyboardButton(get_data_translation(name, lang), callback_data=f"gen_overview_chart_{name}")])
+            keyboard_buttons.append([InlineKeyboardButton(escape_markdown(get_data_translation(name, lang), version=2), callback_data=f"gen_overview_chart_{name}")])
         
         # Кнопка "Назад": текст экранируется
-        keyboard_buttons.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="report_menu_all")])
+        keyboard_buttons.append([InlineKeyboardButton(escape_markdown(get_text('back_button', lang), version=2), callback_data="report_menu_all")])
 
         await wait_msg.edit_text(
             text="\n".join(message_lines),
             reply_markup=InlineKeyboardMarkup(keyboard_buttons),
-            parse_mode="MarkdownV2" # Обязательно указываем MarkdownV2
+            parse_mode="MarkdownV2"
         )
 
     except Exception as e:
         logger.error(f"Ошибка в show_overview_dashboard_menu: {e}")
         # Сообщение об ошибке: экранируется
         await wait_msg.edit_text(
-            f"❌ {escape_markdown(get_text('error_generic', lang), version=2)}",
+            escape_markdown(f"❌ {get_text('error_generic', lang)}", version=2),
             parse_mode="MarkdownV2"
         )
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str) -> None:
