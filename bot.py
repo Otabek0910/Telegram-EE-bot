@@ -1904,6 +1904,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
             if not disc_df.empty:
                 has_any_reports = True
 
+                disc_df['planned_volume'] = disc_df['people_count'] * disc_df['norm_per_unit']
+
                 total_people = int(disc_df['people_count'].sum())
                 total_plan = (disc_df['people_count'] * disc_df['norm_per_unit']).sum()
                 total_fact = disc_df['volume'].sum()
