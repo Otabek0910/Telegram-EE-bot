@@ -60,6 +60,7 @@ REPORTS_GROUP_URL = "https://t.me/+OdHnUNt1WaZiMDY6" # <<< ДЛЯ ПУНКТА 4
 
 AWAITING_RESTORE_FILE = range(12, 13)
 AWAITING_DISCIPLINE_FOR_MANAGER = range(23, 24)
+SELECTING_PERSONNEL_HISTORY_DATE = range(24, 25)
 
 # Настройка логирования
 logging.basicConfig(
@@ -1836,6 +1837,11 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if user_role.get('isManager') or user_role.get('isAdmin') or user_role.get('isPto'):
              dashboard_buttons.append([InlineKeyboardButton("👥 Статус персонала", callback_data="personnel_status")])
 
+         # === НАЧАЛО ИЗМЕНЕНИЯ: ДОБАВЛЕНИЕ КНОПКИ ИСТОРИИ ТАБЕЛЕЙ ===
+        if user_role.get('isManager') or user_role.get('isAdmin') or user_role.get('isPto') or user_role.get('isKiok'):
+             dashboard_buttons.append([InlineKeyboardButton("🗓️ История табелей", callback_data="personnel_history_menu")])
+        # === КОНЕЦ ИЗМЕНЕНИЯ ===
+
         if user_role.get('isManager') or user_role.get('isAdmin') or user_role.get('isPto'):
              dashboard_buttons.append([InlineKeyboardButton("🗑️ Удалить отчет", callback_data="delete_report_list_1")])
 
@@ -2141,6 +2147,21 @@ async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAU
     """Показывает лаконичное меню выбора дисциплин для отчета 'Проблемные бригады' с корректным подсчетом."""
     query = update.callback_query
     await query.answer()
+
+    user_id = str(query.from_user.id)
+    user_role = check_user_role(user_id)
+
+    # --- НАЧАЛО ИЗМЕНЕНИЯ: Проверка на закрепленную дисциплину и редирект ---
+    # Если пользователь - Руководитель 2 уровня, ПТО или КИОК (т.е. у него есть закрепленная дисциплина)
+    if user_role.get('discipline') and (user_role.get('isManager') and user_role.get('managerLevel') == 2 or user_role.get('isPto') or user_role.get('isKiok')):
+        discipline_name = user_role['discipline']
+        # Сразу вызываем генератор отчета для нужной дисциплины
+        await generate_problem_brigades_report(update, context, discipline_name=discipline_name, page=1)
+        return # Важно выйти из функции, чтобы не выполнять остальной код
+    # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
+    # Остальной код выполняется только для Админов и Руководителей 1 уровня (тех, кто выбирает дисциплину)
+
     await query.edit_message_text("⏳ Собираю сводку по дисциплинам...")
 
     disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
@@ -2154,7 +2175,7 @@ async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAU
         return
 
     for disc_id, disc_name in disciplines:
-        # === НАЧАЛО ИЗМЕНЕНИЯ: Корректная логика подсчета ===
+        # === Корректная логика подсчета (как уже была) ===
         # 1. Считаем, сколько всего бригад СЕЙЧАС в этой дисциплине
         all_brigades_raw = db_query("SELECT 1 FROM brigades WHERE discipline = %s", (disc_id,))
         all_brigades_count = len(all_brigades_raw) if all_brigades_raw else 0
@@ -2168,7 +2189,7 @@ async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAU
         """
         reported_today_raw = db_query(reported_today_query, (disc_id, today_str))
         reported_today_count = reported_today_raw[0][0] if reported_today_raw else 0
-        # === КОНЕЦ ИЗМЕНЕНИЯ ===
+        # === Конец логики подсчета ===
 
         non_reporters_count = all_brigades_count - reported_today_count
         
@@ -2251,12 +2272,12 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
         if total_items == 0:
             await query.edit_message_text(
                 f"✅ *По дисциплине «{discipline_name}» проблемных бригад не найдено!*",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К выбору дисциплин", callback_data="handle_problem_brigades")]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="handle_problem_brigades_button")]]), # ИЗМЕНЕНИЕ ЗДЕСЬ
                 parse_mode="Markdown"
             )
             return
 
-        total_pages = math.ceil(total_items / items_per_page)
+        total_pages = math.ceil(total_items / items_per_page) if total_items > 0 else 1
         start_index = (page - 1) * items_per_page
         end_index = start_index + items_per_page
         items_on_page = final_problem_list[start_index:end_index]
@@ -2266,7 +2287,8 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
         if page > 1: nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"gen_problem_report_{discipline_name}_{page-1}"))
         if page < total_pages: nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"gen_problem_report_{discipline_name}_{page+1}"))
 
-        keyboard = [nav_buttons, [InlineKeyboardButton("◀️ К выбору дисциплин", callback_data="handle_problem_brigades")]]
+        # ИЗМЕНЕНИЕ: Кнопка "Назад" теперь ведет на handle_problem_brigades_button
+        keyboard = [nav_buttons, [InlineKeyboardButton("◀️ Назад", callback_data="handle_problem_brigades_button")]]
         await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     except Exception as e:
@@ -3710,73 +3732,127 @@ async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Ошибка при формировании статуса персонала: {e}")
         await query.edit_message_text("❌ Произошла ошибка при сборе данных.")
 
-async def generate_discipline_personnel_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Генерирует детальный постраничный отчет по персоналу для конкретной дисциплины."""
+async def generate_discipline_personnel_report(update: Update, context: ContextTypes.DEFAULT_TYPE, 
+                                                discipline_name: str = None, page: int = 1,
+                                                start_date: str = None, end_date: str = None, 
+                                                period_display_text: str = None) -> None:
+    """Генерирует детальный постраничный отчет по персоналу для конкретной дисциплины и периода."""
     query = update.callback_query
     await query.answer()
 
-    parts = query.data.split('_')
-    discipline_name = parts[2]
-    page = int(parts[3])
+    # Парсинг параметров из callback_data или использование переданных напрямую
+    if discipline_name is None:
+        parts = query.data.split('_')
+        discipline_name = parts[2]
+        page = int(parts[3])
+        # Если пришли из кнопок "Сегодня", "Вчера", "Последние 7 дней" или пагинации исторического отчета
+        if len(parts) > 4: # personnel_history_show_{discipline_name}_{start_date}_{end_date}_{page}
+            start_date = parts[4]
+            end_date = parts[5]
+            page = int(parts[6]) if len(parts) > 6 else 1 # Для пагинации
+            
+            # Определяем текст для отображения периода
+            start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
+            end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
+            if start_date_obj == end_date_obj:
+                period_display_text = f"на {start_date_obj.strftime('%d.%m.%Y')}"
+            elif (date.today() - start_date_obj).days <= 7 and (date.today() - end_date_obj).days == 0: # Если это "последние 7 дней" от сегодняшней даты
+                period_display_text = "за последние 7 дней"
+            else:
+                period_display_text = f"за период с {start_date_obj.strftime('%d.%m.%Y')} по {end_date_obj.strftime('%d.%m.%Y')}"
 
-    await query.edit_message_text(f"⏳ Формирую детальный отчет для «{discipline_name}»...")
+        else: # Если пришли из "Статус персонала" (т.е. за сегодня)
+            start_date = date.today().strftime('%Y-%m-%d')
+            end_date = date.today().strftime('%Y-%m-%d')
+            period_display_text = "на сегодня"
+
+    await query.edit_message_text(f"⏳ Формирую детальный отчет для «{discipline_name}» {period_display_text}...")
 
     try:
-        today_str = date.today().strftime('%Y-%m-%d')
         items_per_page = 10 
         offset = (page - 1) * items_per_page
 
+        # Определяем ID дисциплины
+        discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
+        discipline_id = discipline_id_raw[0][0] if discipline_id_raw else None
+
+        if not discipline_id:
+            await query.edit_message_text(f"❌ Ошибка: Дисциплина «{discipline_name}» не найдена.")
+            return
+
+        # 1. Запрос для подсчета общего количества бригад в дисциплине, подавших табель за период
         count_query = """
-            SELECT COUNT(dr.id)
+            SELECT COUNT(DISTINCT dr.brigade_user_id)
             FROM daily_rosters dr
             JOIN brigades b ON dr.brigade_user_id = b.user_id
-            JOIN disciplines d ON b.discipline = d.id
-            WHERE dr.roster_date = %s AND d.name = %s
+            WHERE dr.roster_date BETWEEN %s AND %s AND b.discipline = %s
         """
-        total_items_raw = db_query(count_query, (today_str, discipline_name))
+        total_items_raw = db_query(count_query, (start_date, end_date, discipline_id))
         total_items = total_items_raw[0][0] if total_items_raw else 0
         total_pages = math.ceil(total_items / items_per_page) if total_items > 0 else 1
 
+        # 2. Запрос для получения списка бригад с их статусом занятости за период
         data_query = """
             SELECT 
                 b.brigade_name, 
-                dr.total_people,
-                (SELECT SUM(r.people_count) 
-                 FROM reports r 
-                 WHERE r.foreman_name = b.brigade_name AND r.report_date = %s) as assigned_people
+                SUM(dr.total_people) as total_declared_period,
+                COALESCE(SUM(r.people_count), 0) as assigned_people_period,
+                b.user_id as brigade_user_id
             FROM daily_rosters dr
             JOIN brigades b ON dr.brigade_user_id = b.user_id
-            JOIN disciplines d ON b.discipline = d.id
-            WHERE dr.roster_date = %s AND d.name = %s
+            LEFT JOIN reports r ON r.foreman_name = b.brigade_name AND r.report_date BETWEEN %s AND %s
+            WHERE dr.roster_date BETWEEN %s AND %s AND b.discipline = %s
+            GROUP BY b.brigade_name, b.user_id
             ORDER BY b.brigade_name
             LIMIT %s OFFSET %s;
         """
-        roster_data = db_query(data_query, (today_str, today_str, discipline_name, items_per_page, offset))
+        roster_data = db_query(data_query, (start_date, end_date, start_date, end_date, discipline_id, items_per_page, offset))
 
-        header = f"👥 *Детализация: «{discipline_name}»* (Стр. {page}/{total_pages})\n"
+        header = f"👥 *Детализация персонала: «{discipline_name}» {period_display_text}* (Стр. {page}/{total_pages})\n"
+        
+        message_text = header
         
         if not roster_data:
-            message_text = header + "\n_Нет данных для отображения._"
+            message_text += "\n_Нет данных для отображения._"
         else:
             report_lines = []
-            for brigade, total, assigned in roster_data:
-                assigned = assigned or 0
-                reserve = total - assigned
-                report_lines.append(f"▪️ *{brigade}:* Заявлено: {total}, Занято: {assigned}, Резерв: {reserve}")
-            
-            message_text = header + "\n".join(report_lines)
+            for brigade_name, total_declared_period, assigned_people_period, brigade_user_id in roster_data:
+                reserve_period = total_declared_period - assigned_people_period
+                report_lines.append(f"▪️ *{brigade_name}:* Заявлено: {total_declared_period}, Занято: {assigned_people_period}, Резерв: {reserve_period}")
+                
+                # Детализация по должностям для каждой бригады за указанный период
+                # Это будет сумма по должностям за весь период
+                roles_detail_query = """
+                    SELECT pr.role_name, SUM(drd.people_count) as total_by_role
+                    FROM daily_roster_details drd
+                    JOIN personnel_roles pr ON drd.role_id = pr.id
+                    JOIN daily_rosters dr ON drd.roster_id = dr.id
+                    WHERE dr.brigade_user_id = %s AND dr.roster_date BETWEEN %s AND %s
+                    GROUP BY pr.role_name
+                    ORDER BY pr.role_name;
+                """
+                roles_detail = db_query(roles_detail_query, (brigade_user_id, start_date, end_date))
+                if roles_detail:
+                    roles_text = ", ".join([f"{role}: {count}" for role, count in roles_detail])
+                    report_lines.append(f"    _Состав за период: {roles_text}_")
+                report_lines.append("") # Пустая строка для разделения бригад
+
+            message_text += "\n".join(report_lines)
 
         nav_buttons = []
         if page > 1:
-            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"personnel_detail_{discipline_name}_{page-1}"))
+            # Обновленные callback_data для пагинации
+            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"personnel_history_show_{discipline_name}_{start_date}_{end_date}_{page-1}"))
         if page < total_pages:
-            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"personnel_detail_{discipline_name}_{page+1}"))
+            # Обновленные callback_data для пагинации
+            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"personnel_history_show_{discipline_name}_{start_date}_{end_date}_{page+1}"))
         
         keyboard = []
         if nav_buttons:
             keyboard.append(nav_buttons)
         
-        keyboard.append([InlineKeyboardButton("◀️ К общей сводке", callback_data="personnel_status")])
+        # Кнопка назад ведет на меню выбора периода для этой дисциплины
+        keyboard.append([InlineKeyboardButton("◀️ Назад к выбору периода", callback_data=f"personnel_history_discipline_select_{discipline_name}")])
         
         await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
@@ -3791,8 +3867,8 @@ async def handle_problem_brigades_button(update: Update, context: ContextTypes.D
 
     user_role = check_user_role(str(query.from_user.id))
     
-    # Если это Рук. 2 уровня или ПТО, сразу генерируем отчет для его дисциплины
-    if user_role.get('managerLevel') == 2 or user_role.get('isPto'):
+    # Если это Рук. 2 уровня, ПТО или КИОК, сразу генерируем отчет для его дисциплины
+    if user_role.get('managerLevel') == 2 or user_role.get('isPto') or user_role.get('isKiok'): # Добавлено isKiok
         discipline = user_role.get('discipline')
         if not discipline:
             await query.edit_message_text("❗️Ошибка: Для вашей роли не задана дисциплина.")
@@ -3804,6 +3880,160 @@ async def handle_problem_brigades_button(update: Update, context: ContextTypes.D
     # Иначе (для Админа и Рук. 1 уровня) показываем меню выбора дисциплин
     else:
         await show_problem_brigades_menu(update, context)
+
+# --- Доп функции - Исторический отчет табель ---
+async def show_personnel_history_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Показывает меню выбора дисциплины или периода для исторического обзора табелей,
+    в зависимости от роли пользователя.
+    """
+    query = update.callback_query
+    await query.answer()
+
+    user_id = str(query.from_user.id)
+    user_role = check_user_role(user_id)
+
+    keyboard = []
+    text = ""
+
+    # Если пользователь имеет закрепленную дисциплину (Рук. 2 уровня, ПТО, КИОК)
+    if user_role.get('discipline') and (user_role.get('isManager') and user_role.get('managerLevel') == 2 or user_role.get('isPto') or user_role.get('isKiok')):
+        discipline_name = user_role['discipline']
+        # Сохраняем дисциплину в user_data для последующих шагов
+        context.user_data['personnel_history_discipline'] = discipline_name
+        # Сразу переходим к выбору периода
+        await personnel_history_select_period(update, context)
+        return
+    # Если это Администратор или Руководитель 1 уровня (выбор дисциплины)
+    else:
+        text = "📊 *История табелей*\n\nВыберите дисциплину для просмотра:"
+        disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
+        
+        if not disciplines:
+            await query.edit_message_text("⚠️ В системе нет дисциплин для просмотра истории табелей.")
+            return
+
+        for d_name, in disciplines:
+            keyboard.append([InlineKeyboardButton(f"По «{d_name}»", callback_data=f"personnel_history_discipline_select_{d_name}")])
+        keyboard.append([InlineKeyboardButton("◀️ Назад к отчетам", callback_data="report_menu_all")])
+
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def personnel_history_discipline_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает выбор дисциплины для исторического обзора и предлагает выбрать период."""
+    query = update.callback_query
+    await query.answer()
+    
+    discipline_name = query.data.split('_')[-1]
+    context.user_data['personnel_history_discipline'] = discipline_name
+
+    await personnel_history_select_period(update, context)
+
+async def personnel_history_select_period(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Предлагает выбрать период для просмотра истории табелей."""
+    query = update.callback_query
+    await query.answer()
+
+    discipline_name = context.user_data.get('personnel_history_discipline')
+    if not discipline_name:
+        await query.edit_message_text("❌ Ошибка: Дисциплина не определена. Пожалуйста, начните заново.", 
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="personnel_history_menu")]]))
+        return
+
+    text = f"📊 *История табелей по дисциплине «{discipline_name}»*\n\nВыберите период:"
+    
+    today_str = date.today().strftime('%Y-%m-%d')
+    yesterday_str = (date.today() - timedelta(days=1)).strftime('%Y-%m-%d')
+    week_ago_str = (date.today() - timedelta(days=7)).strftime('%Y-%m-%d')
+
+    keyboard = [
+        [InlineKeyboardButton("Сегодня", callback_data=f"personnel_history_show_{discipline_name}_{today_str}_{today_str}")],
+        [InlineKeyboardButton("Вчера", callback_data=f"personnel_history_show_{discipline_name}_{yesterday_str}_{yesterday_str}")],
+        [InlineKeyboardButton("Последние 7 дней", callback_data=f"personnel_history_show_{discipline_name}_{week_ago_str}_{today_str}")],
+        [InlineKeyboardButton("Выбрать дату", callback_data=f"personnel_history_pick_date_{discipline_name}")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="personnel_history_menu")]
+    ]
+
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def get_date_for_personnel_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Запрашивает у пользователя конкретную дату для исторического обзора."""
+    query = update.callback_query
+    await query.answer()
+
+    discipline_name = query.data.split('_')[-1]
+    context.user_data['personnel_history_discipline'] = discipline_name # Убедимся, что дисциплина сохранена
+
+    await query.edit_message_text("📅 *Введите дату (ДД.ММ.ГГГГ)* для просмотра истории табелей (например, `01.07.2025` или диапазон `01.07.2025, 07.07.2025`):", parse_mode="Markdown")
+    return SELECTING_PERSONNEL_HISTORY_DATE # Переходим в новое состояние ожидания ввода даты
+
+async def process_custom_history_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает введенную пользователем дату(ы) и генерирует отчет."""
+    chat_id = update.effective_chat.id
+    user_input = update.message.text.strip()
+    
+    discipline_name = context.user_data.get('personnel_history_discipline')
+    if not discipline_name:
+        await update.message.reply_text("❌ Ошибка: Дисциплина не определена. Пожалуйста, начните заново.", 
+                                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="personnel_history_menu")]]))
+        return ConversationHandler.END
+
+    start_date_str = None
+    end_date_str = None
+    period_text_display = ""
+
+    try:
+        if ',' in user_input: # Предполагаем диапазон дат
+            dates = [d.strip() for d in user_input.split(',')]
+            if len(dates) != 2:
+                raise ValueError("Неверный формат. Используйте ДД.ММ.ГГГГ или ДД.ММ.ГГГГ, ДД.ММ.ГГГГ.")
+            
+            start_date_obj = datetime.strptime(dates[0], "%d.%m.%Y").date()
+            end_date_obj = datetime.strptime(dates[1], "%d.%m.%Y").date()
+
+            # Убедимся, что начальная дата не позже конечной
+            if start_date_obj > end_date_obj:
+                start_date_obj, end_date_obj = end_date_obj, start_date_obj # Поменять местами
+
+            start_date_str = start_date_obj.strftime('%Y-%m-%d')
+            end_date_str = end_date_obj.strftime('%Y-%m-%d')
+            period_text_display = f"за период с {start_date_obj.strftime('%d.%m.%Y')} по {end_date_obj.strftime('%d.%m.%Y')}"
+
+        else: # Одна дата
+            single_date_obj = datetime.strptime(user_input, "%d.%m.%Y").date()
+            start_date_str = single_date_obj.strftime('%Y-%m-%d')
+            end_date_str = single_date_obj.strftime('%Y-%m-%d')
+            period_text_display = f"на {single_date_obj.strftime('%d.%m.%Y')}"
+            
+        # Удаляем сообщение пользователя
+        await update.message.delete()
+        # Удаляем предыдущее сообщение бота с запросом даты
+        if 'last_bot_message_id' in context.user_data:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=context.user_data['last_bot_message_id'])
+            except Exception: pass # Игнорируем ошибки удаления
+
+        # Вызываем функцию генерации отчета с учетом выбранных дат
+        await generate_discipline_personnel_report(
+            update, context, 
+            discipline_name=discipline_name, 
+            start_date=start_date_str, 
+            end_date=end_date_str,
+            period_display_text=period_text_display,
+            page=1
+        )
+        context.user_data.clear() # Очищаем user_data после завершения диалога
+        return ConversationHandler.END
+
+    except ValueError:
+        await update.message.reply_text(
+            "❌ *Ошибка формата даты!* Пожалуйста, введите дату в формате **ДД.ММ.ГГГГ** "
+            "или диапазон дат **ДД.ММ.ГГГГ, ДД.ММ.ГГГГ**.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"personnel_history_pick_date_{discipline_name}")]])
+        )
+        return SELECTING_PERSONNEL_HISTORY_DATE # Остаемся в том же состоянии
+
 
 # --- Доп функции - Формирование отчета бригадира ---
 async def prompt_for_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3931,6 +4161,8 @@ async def execute_final_roster_save(update: Update, context: ContextTypes.DEFAUL
 
     context.user_data.clear()
     return ConversationHandler.END
+
+
 
 # --- Пагинация формирование отчетов---
 
@@ -4210,6 +4442,21 @@ def main() -> None:
     fallbacks=[CallbackQueryHandler(cancel_admin_action, pattern="^cancel_admin_action$")],
     per_user=True
 )
+    
+      # === НАЧАЛО ИЗМЕНЕНИЙ: НОВЫЙ CONVERSATIONHANDLER ДЛЯ ВВОДА ДАТЫ ИСТОРИИ ПЕРСОНАЛА ===
+    personnel_history_date_conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(get_date_for_personnel_history, pattern="^personnel_history_pick_date_")],
+        states={
+            SELECTING_PERSONNEL_HISTORY_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_custom_history_date)]
+        },
+        fallbacks=[
+            CallbackQueryHandler(personnel_history_select_period, pattern="^personnel_history_discipline_select_"), # Назад к выбору периода
+            CommandHandler('cancel', personnel_history_select_period), # Отмена
+            CommandHandler('start', start_over) # Возврат в главное меню
+        ],
+        per_user=True, allow_reentry=True # allow_reentry=True важно для корректного сброса
+    )
+    # === КОНЕЦ ИЗМЕНЕНИЙ ===
     application.add_handler(level_change_handler)
 
     application.add_handler(restore_conv_handler)
@@ -4257,6 +4504,23 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(execute_delete_report, pattern="^execute_delete_"))
     application.add_handler(CallbackQueryHandler(confirm_reset_roster, pattern="^reset_roster_"))
     application.add_handler(CallbackQueryHandler(execute_reset_roster, pattern="^execute_reset_roster_"))
+
+    # === НАЧАЛО ИЗМЕНЕНИЙ: ДОБАВЛЕНИЕ НОВЫХ ОБРАБОТЧИКОВ ИСТОРИИ ПЕРСОНАЛА ===
+    application.add_handler(CallbackQueryHandler(show_personnel_history_menu, pattern="^personnel_history_menu$"))
+    application.add_handler(CallbackQueryHandler(personnel_history_discipline_select, pattern="^personnel_history_discipline_select_"))
+    application.add_handler(CallbackQueryHandler(personnel_history_select_period, pattern="^personnel_history_period_select_"))
+    application.add_handler(CallbackQueryHandler(
+        # Используем лямбда-функцию для передачи параметров в generate_discipline_personnel_report
+        # personnel_history_show_{discipline_name}_{start_date}_{end_date}_{page (опционально)}
+        lambda u, c: generate_discipline_personnel_report(u, c, 
+                                                        discipline_name=u.callback_query.data.split('_')[3],
+                                                        start_date=u.callback_query.data.split('_')[4],
+                                                        end_date=u.callback_query.data.split('_')[5],
+                                                        page=int(u.callback_query.data.split('_')[6]) if len(u.callback_query.data.split('_')) > 6 else 1
+                                                    ), 
+        pattern="^personnel_history_show_"
+    ))
+    # === КОНЕЦ ИЗМЕНЕНИЙ ===
     
     
     
