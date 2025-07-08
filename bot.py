@@ -74,7 +74,7 @@ logger = logging.getLogger(__name__)
 # Состояния для диалога регистрации
 SELECTING_ROLE, GETTING_NAME, GETTING_CONTACT, SELECTING_MANAGER_LEVEL, SELECTING_DISCIPLINE = range(5)
 
-AWAITING_ROLES_COUNT, CONFIRM_ROSTER = range(20, 22) # Используем числа подальше, чтобы не пересеклись
+AWAITING_ROLES_COUNT, CONFIRM_ROSTER, CONFIRM_DANGEROUS_ROSTER_SAVE = range(20, 23) 
 # Состояния для диалога отчёта
 OWNER_SELECTING_DISCIPLINE, GETTING_CORPUS, GETTING_WORK_TYPE, GETTING_PEOPLE_COUNT, GETTING_VOLUME, GETTING_DATE, GETTING_NOTES, CONFIRM_REPORT = range(5, 13)
 
@@ -1433,11 +1433,15 @@ async def get_role_counts(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return AWAITING_ROLES_COUNT
 
 async def save_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Сохраняет подтвержденный табель в базу данных, включая детали."""
+    """
+    Проверяет данные табеля. Если все хорошо - сохраняет. 
+    Если новый табель меньше уже задействованных людей - просит подтверждение.
+    """
     query = update.callback_query
     await query.answer()
 
     user_id = str(query.from_user.id)
+    user_role = check_user_role(user_id)
     roster_summary = context.user_data.get('roster_summary')
 
     if not roster_summary:
@@ -1445,47 +1449,34 @@ async def save_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return ConversationHandler.END
 
     today_str = date.today().strftime('%Y-%m-%d')
-    total_people = roster_summary['total']
+    total_people_new = roster_summary['total']
     
-    # 1. Сохраняем "шапку" табеля
-    roster_id = db_query(
-        "INSERT INTO daily_rosters (roster_date, brigade_user_id, total_people) VALUES (%s, %s, %s) RETURNING id",
-        (today_str, user_id, total_people)
-    )
-    
-    # 2. Сохраняем детализацию
-    if roster_id:
-        roles_map_raw = db_query("SELECT id, role_name FROM personnel_roles")
-        roles_map = {name: role_id for role_id, name in roles_map_raw} if roles_map_raw else {}
-        
-        details_to_save = roster_summary.get('details', {})
-        for role_name, count in details_to_save.items():
-            role_id = roles_map.get(role_name)
-            if role_id:
-                db_query(
-                    "INSERT INTO daily_roster_details (roster_id, role_id, people_count) VALUES (%s, %s, %s)",
-                    (roster_id, role_id, count)
-                )
-            else:
-                logger.warning(f"При сохранении табеля не найдена должность '{role_name}' в справочнике.")
+    # Считаем, сколько людей УЖЕ задействовано в отчетах за сегодня
+    brigade_name_for_query = user_role.get('brigadeName') or f"Бригада пользователя {user_id}"
+    assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name_for_query, today_str))
+    total_assigned = assigned_info[0][0] or 0 if assigned_info else 0
 
-        # Редактируем сообщение о подтверждении и ставим таймер на удаление
-        confirmation_message = await query.edit_message_text("✅ *Табель на сегодня успешно принят!*")
-        context.job_queue.run_once(
-            remove_message_job, 
-            when=timedelta(hours=24), 
-            data={'chat_id': query.message.chat_id, 'message_id': confirmation_message.message_id},
-            name=f"delete_{query.message.chat_id}_{confirmation_message.message_id}"
-        )
-        
-        # Показываем обновленное главное меню
-        await show_main_menu_logic(context, user_id, query.message.chat_id)
+    # СЦЕНАРИЙ 1: Новый табель больше или равен уже задействованным людям (безопасный)
+    if total_people_new >= total_assigned:
+        reserve = total_people_new - total_assigned
+        greeting_text = f"✅ *Табель на сегодня успешно принят!*\n\nВ вашем резерве осталось *{reserve}* чел."
+        # Просто выполняем сохранение
+        return await execute_final_roster_save(update, context, greeting=greeting_text)
 
+    # СЦЕНАРИЙ 2: Новый табель меньше, чем уже задействовано (опасный)
     else:
-        await query.edit_message_text("❌ Произошла критическая ошибка при сохранении табеля.")
-
-    context.user_data.clear()
-    return ConversationHandler.END
+        warning_text = (
+            f"‼️ *ВНИМАНИЕ!* ‼️\n\n"
+            f"Вы пытаетесь заявить *{total_people_new}* чел., но в отчетах за сегодня уже задействовано *{total_assigned}* чел.\n\n"
+            f"При подтверждении **все ваши отчеты за сегодня будут УДАЛЕНЫ**, и вам придется распределять людей заново.\n\n"
+            f"Вы уверены, что хотите продолжить?"
+        )
+        keyboard = [
+            [InlineKeyboardButton("✅ Да, удалить отчеты и сохранить", callback_data="force_save_roster")],
+            [InlineKeyboardButton("❌ Нет, отменить", callback_data="cancel_roster")]
+        ]
+        await query.edit_message_text(warning_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        return CONFIRM_DANGEROUS_ROSTER_SAVE # Переходим в новое состояние ожидания
 
 async def cancel_roster_submission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Отменяет диалог подачи табеля."""
@@ -1655,8 +1646,19 @@ async def execute_delete_report(update: Update, context: ContextTypes.DEFAULT_TY
     await list_reports_for_deletion(update, context)
 
 async def confirm_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Запрашивает подтверждение на сброс табеля."""
+    """Запрашивает подтверждение на сброс табеля, ПРОВЕРЯЯ ПРАВА."""
     query = update.callback_query
+    
+    # <<< НАЧАЛО ПРОВЕРКИ ПРАВ >>>
+    admin_user_id = str(query.from_user.id)
+    admin_role = check_user_role(admin_user_id)
+    
+    # Проверяем, что нажимающий - Админ, Рук. 2 ур. или ПТО
+    if not (admin_role.get('isAdmin') or admin_role.get('managerLevel') == 2 or admin_role.get('isPto')):
+        await query.answer("⛔️ У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    # <<< КОНЕЦ ПРОВЕРКИ ПРАВ >>>
+
     await query.answer()
     user_id_to_reset = query.data.split('_')[-1]
 
@@ -1679,21 +1681,29 @@ async def confirm_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def execute_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Удаляет сегодняшний табель для бригадира и уведомляет его."""
+    """Удаляет сегодняшний табель для бригадира, ПРОВЕРЯЯ ПРАВА."""
     query = update.callback_query
+    
+    # <<< НАЧАЛО ПРОВЕРКИ ПРАВ >>>
+    admin_user_id = str(query.from_user.id)
+    admin_role = check_user_role(admin_user_id)
+    
+    if not (admin_role.get('isAdmin') or admin_role.get('managerLevel') == 2 or admin_role.get('isPto')):
+        await query.answer("⛔️ У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    # <<< КОНЕЦ ПРОВЕРКИ ПРАВ >>>
+
     await query.answer("Сбрасываю табель...")
     user_id_to_reset = query.data.split('_')[-1]
     
     today_str = date.today().strftime('%Y-%m-%d')
     
-    # Удаляем запись из daily_rosters. Записи в daily_roster_details удалятся автоматически (ON DELETE CASCADE)
     db_query("DELETE FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id_to_reset, today_str))
     
     logger.info(f"Админ {query.from_user.id} сбросил табель для пользователя {user_id_to_reset}")
     
     await query.edit_message_text("✅ Табель на сегодня успешно сброшен.")
     
-    # Отправляем уведомление бригадиру и обновляем его меню
     greeting_text = "⚠️ Администратор сбросил ваш сегодняшний табель. Пожалуйста, подайте его заново."
     await force_user_to_main_menu(context, user_id_to_reset, greeting_text)
 
@@ -1812,9 +1822,9 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
        
         # Кнопка "Проблемные бригады" теперь ТОЛЬКО для Менеджеров
         if user_role.get('isManager'):
-            dashboard_buttons.append([InlineKeyboardButton("⚠️ Проблемные бригады", callback_data="report_underperforming")])
+          dashboard_buttons.append([InlineKeyboardButton("⚠️ Проблемные бригады", callback_data="handle_problem_brigades")])
 
-        dashboard_buttons.append([InlineKeyboardButton("📅 Исторический обзор", callback_data="report_historical")])
+          dashboard_buttons.append([InlineKeyboardButton("📅 Исторический обзор", callback_data="report_historical")])
         
         # Кнопка экспорта только для ПТО, КИОК и админов
         if user_role.get('isPto') or user_role.get('isKiok') or user_role.get('isAdmin'):
@@ -2521,7 +2531,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text=message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def set_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обновляет дисциплину для пользователя и принудительно обновляет его меню."""
+    """Обновляет дисциплину, СБРАСЫВАЕТ ТАБЕЛЬ, и принудительно обновляет меню."""
     query = update.callback_query
     await query.answer("Обновляю дисциплину...")
 
@@ -2529,21 +2539,26 @@ async def set_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     role, user_id_to_edit, new_discipline_id = parts[2], parts[3], int(parts[4])
     
     db_query(f"UPDATE {role} SET discipline = %s WHERE user_id = %s", (new_discipline_id, user_id_to_edit))
+    
+    # <<< НОВЫЙ БЛОК: Удаляем сегодняшний табель для этого бригадира >>>
+    if role == 'brigades':
+        today_str = date.today().strftime('%Y-%m-%d')
+        db_query("DELETE FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id_to_edit, today_str))
+        logger.info(f"Табель для {user_id_to_edit} на {today_str} был сброшен из-за смены дисциплины.")
+    # <<< КОНЕЦ НОВОГО БЛОКА >>>
+
     discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (new_discipline_id,))
     new_discipline_name = discipline_name_raw[0][0] if discipline_name_raw else "Неизвестно"
 
-    # Отправляем пользователю уведомление и новое меню
-    greeting_text = f"⚙️ Администратор изменил вашу дисциплину на «{new_discipline_name}»."
+    greeting_text = f"⚙️ Администратор изменил вашу дисциплину на «{new_discipline_name}». Пожалуйста, подайте табель заново, если уже делали это сегодня."
     await force_user_to_main_menu(context, user_id_to_edit, greeting_text)
 
-    # Уведомляем админа об успехе
     await context.bot.send_message(
         chat_id=query.message.chat_id,
         text=f"✅ Дисциплина для пользователя `{user_id_to_edit}` изменена на *{new_discipline_name}*.",
         parse_mode="Markdown"
     )
     
-    # Возвращаем админа к списку
     await query.message.delete()
     query.data = f"list_users_{role}_1"
     await list_users(update, context)
@@ -2827,38 +2842,44 @@ async def handle_directories_excel(update: Update, context: ContextTypes.DEFAULT
 
 # --- Редактирование пользователей от админа
 async def show_user_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает меню с опциями для редактирования, включая кнопку Удалить."""
+    """Показывает меню с опциями для редактирования с учетом прав доступа."""
     query = update.callback_query
     await query.answer()
 
-    # 1. Парсим callback_data: edit_user_{role}_{user_id}
     parts = query.data.split('_')
     role, user_id_to_edit = parts[2], parts[3]
     
-    # Получаем актуальное имя пользователя для заголовка
+    # Получаем роль того, КТО СМОТРИТ МЕНЮ
+    viewer_id = str(query.from_user.id)
+    viewer_role = check_user_role(viewer_id)
+    
     user_data = db_query(f"SELECT first_name, last_name FROM {role} WHERE user_id = %s", (user_id_to_edit,))
     full_name = f"{user_data[0][0]} {user_data[0][1]}" if user_data else user_id_to_edit
 
     message_text = f"👤 *Редактирование: {full_name}*\n`{user_id_to_edit}`\n\nВыберите действие:"
 
-    # 2. Создаем кнопки действий
     keyboard_buttons = []
+    
     if role == 'managers':
         keyboard_buttons.append([InlineKeyboardButton("Изменить уровень", callback_data=f"change_level_{user_id_to_edit}")])
         keyboard_buttons.append([InlineKeyboardButton("Изменить дисциплину", callback_data=f"change_discipline_{role}_{user_id_to_edit}")])
-    elif role in ['brigades', 'pto', 'kiok']:
+    elif role in ['pto', 'kiok']:
         keyboard_buttons.append([InlineKeyboardButton("Изменить дисциплину", callback_data=f"change_discipline_{role}_{user_id_to_edit}")])
     elif role == 'brigades':
         keyboard_buttons.append([InlineKeyboardButton("Изменить дисциплину", callback_data=f"change_discipline_{role}_{user_id_to_edit}")])
-    # <<< ДОБАВЬТЕ ЭТУ КНОПКУ >>>
-        keyboard_buttons.append([InlineKeyboardButton("🔄 Сбросить сегодняшний табель", callback_data=f"reset_roster_{user_id_to_edit}")])
-    # ДОБАВЛЯЕМ КНОПКУ УДАЛИТЬ
-        keyboard_buttons.append([InlineKeyboardButton("🗑️ Удалить пользователя", callback_data=f"delete_user_{role}_{user_id_to_edit}")])
+        
+        # <<< НАЧАЛО ПРОВЕРКИ ПРАВ ДЛЯ КНОПКИ >>>
+        # Показываем кнопку сброса, только если смотрящий - Админ, Рук. 2 ур. или ПТО
+        if viewer_role.get('isAdmin') or viewer_role.get('managerLevel') == 2 or viewer_role.get('isPto'):
+            keyboard_buttons.append([InlineKeyboardButton("🔄 Сбросить сегодняшний табель", callback_data=f"reset_roster_{user_id_to_edit}")])
+        # <<< КОНЕЦ ПРОВЕРКИ ПРАВ >>>
+
+    # Кнопка удаления доступна всем админам (кроме удаления самого себя или Овнера)
+    if viewer_role.get('isAdmin') and viewer_id != user_id_to_edit and user_id_to_edit != OWNER_ID:
+         keyboard_buttons.append([InlineKeyboardButton("🗑️ Удалить пользователя", callback_data=f"delete_user_{role}_{user_id_to_edit}")])
     
-    # ИСПРАВЛЯЕМ КНОПКУ НАЗАД (добавляем _1 для первой страницы)
     keyboard_buttons.append([InlineKeyboardButton("◀️ Назад к списку", callback_data=f"list_users_{role}_1")])
 
-    # 3. Отправляем меню
     await query.edit_message_text(
         text=message_text,
         reply_markup=InlineKeyboardMarkup(keyboard_buttons),
@@ -3700,6 +3721,28 @@ async def generate_discipline_personnel_report(update: Update, context: ContextT
         logger.error(f"Ошибка при генерации детального отчета по персоналу: {e}")
         await query.edit_message_text("❌ Произошла ошибка при формировании отчета.")
 
+async def handle_problem_brigades_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Проверяет уровень руководителя и показывает правильный отчет по проблемным бригадам."""
+    query = update.callback_query
+    await query.answer()
+
+    user_role = check_user_role(str(query.from_user.id))
+    
+    # Если это Рук. 2 уровня, сразу генерируем отчет для его дисциплины
+    if user_role.get('managerLevel') == 2:
+        discipline = user_role.get('discipline')
+        if not discipline:
+            await query.edit_message_text("❗️Ошибка: Для вашей роли не задана дисциплина.")
+            return
+        
+        # Перенаправляем на первую страницу отчета
+        query.data = f"gen_problem_report_{discipline}_1"
+        await generate_problem_brigades_report(update, context)
+        
+    # Иначе (для Админа и Рук. 1 уровня) показываем меню выбора дисциплин
+    else:
+        await show_problem_brigades_menu(update, context)
+
 # --- Доп функции - Формирование отчета бригадира ---
 async def prompt_for_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Запрашивает у пользователя текст примечания и сохраняет ID сообщения."""
@@ -3770,6 +3813,62 @@ async def confirm_report_logic(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.send_message(chat_id, summary_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     return CONFIRM_REPORT
+
+async def execute_dangerous_roster_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """УДАЛЯЕТ отчеты за день и затем сохраняет новый табель."""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(query.from_user.id)
+    user_role = check_user_role(user_id)
+    today_str = date.today().strftime('%Y-%m-%d')
+    brigade_name = user_role.get('brigadeName') or f"Бригада пользователя {user_id}"
+
+    # Удаляем отчеты
+    db_query("DELETE FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name, today_str))
+    
+    greeting_text = "✅ *Ваши отчеты за сегодня были удалены. Новый табель принят!*"
+    # Теперь вызываем общую функцию сохранения
+    return await execute_final_roster_save(update, context, greeting=greeting_text)
+
+
+async def execute_final_roster_save(update: Update, context: ContextTypes.DEFAULT_TYPE, greeting: str) -> int:
+    """Финальная стадия: сохраняет табель в БД и показывает главное меню."""
+    query = update.callback_query
+    user_id = str(query.from_user.id)
+    roster_summary = context.user_data.get('roster_summary')
+    today_str = date.today().strftime('%Y-%m-%d')
+    total_people_new = roster_summary['total']
+
+    # Удаляем старый табель, если он был (для чистоты)
+    db_query("DELETE FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
+
+    # Сохраняем "шапку" табеля
+    roster_id = db_query(
+        "INSERT INTO daily_rosters (roster_date, brigade_user_id, total_people) VALUES (%s, %s, %s) RETURNING id",
+        (today_str, user_id, total_people_new)
+    )
+    
+    # Сохраняем детализацию
+    if roster_id:
+        roles_map_raw = db_query("SELECT id, role_name FROM personnel_roles")
+        roles_map = {name: role_id for role_id, name in roles_map_raw} if roles_map_raw else {}
+        details_to_save = roster_summary.get('details', {})
+        for role_name, count in details_to_save.items():
+            role_id = roles_map.get(role_name)
+            if role_id:
+                db_query(
+                    "INSERT INTO daily_roster_details (roster_id, role_id, people_count) VALUES (%s, %s, %s)",
+                    (roster_id, role_id, count)
+                )
+        
+        await query.edit_message_text(greeting, parse_mode="Markdown")
+        await show_main_menu_logic(context, user_id, query.message.chat_id)
+    else:
+        await query.edit_message_text("❌ Произошла критическая ошибка при сохранении табеля.")
+
+    context.user_data.clear()
+    return ConversationHandler.END
 
 # --- Пагинация формирование отчетов---
 
@@ -3995,6 +4094,7 @@ def main() -> None:
     states={
         AWAITING_ROLES_COUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_role_counts)],
         CONFIRM_ROSTER: [CallbackQueryHandler(save_roster, pattern="^confirm_roster$")],
+        CONFIRM_DANGEROUS_ROSTER_SAVE: [CallbackQueryHandler(execute_dangerous_roster_save, pattern="^force_save_roster$")],
     },
     fallbacks=[
     CallbackQueryHandler(cancel_roster_submission, pattern="^cancel_roster$"),
@@ -4052,7 +4152,8 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(report_menu, pattern="^report_menu_"))
     application.add_handler(CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview$"))
     application.add_handler(CallbackQueryHandler(lambda u, c: generate_overview_chart(u, c, discipline_name=u.callback_query.data.split('_')[-1]), pattern="^gen_overview_chart_"))
-    application.add_handler(CallbackQueryHandler(show_problem_brigades_menu, pattern="^report_underperforming$"))
+    #application.add_handler(CallbackQueryHandler(show_problem_brigades_menu, pattern="^report_underperforming$"))
+    application.add_handler(CallbackQueryHandler(handle_problem_brigades_button, pattern="^handle_problem_brigades$"))
     application.add_handler(CallbackQueryHandler(generate_problem_brigades_report, pattern="^gen_problem_report_"))
     application.add_handler(CallbackQueryHandler(show_foreman_performance, pattern="^foreman_performance$"))
     application.add_handler(CallbackQueryHandler(show_historical_report_menu, pattern="^report_historical$"))
@@ -4084,6 +4185,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(execute_delete_report, pattern="^execute_delete_"))
     application.add_handler(CallbackQueryHandler(confirm_reset_roster, pattern="^reset_roster_"))
     application.add_handler(CallbackQueryHandler(execute_reset_roster, pattern="^execute_reset_roster_"))
+    
     
     
     # Запускаем бота
