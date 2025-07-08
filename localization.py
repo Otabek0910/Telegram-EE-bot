@@ -182,6 +182,8 @@ TRANSLATIONS = {
 'hr_report_title': "Детализация по «{discipline}» за {date}",
 'hr_report_summary': "▪️ Заявлено: *{total_people}* чел. ▪️ Сдали табель: *{brigade_count}* бригад",
 
+'main_menu_roster_summary_compact': "Табель на сегодня: *{total}* чел. (в резерве: *{reserve}*)",
+
     },
     'en': {
         # --- General ---
@@ -362,6 +364,8 @@ TRANSLATIONS = {
 'hr_report_title': "Details for «{discipline}» for {date}",
 'hr_report_summary': "▪️ Declared: *{total_people}* people ▪️ Rosters submitted: *{brigade_count}* brigades",
 
+'main_menu_roster_summary_compact': "Roster for today: *{total}* people (in reserve: *{reserve}*)",
+
     },
     'uz': {
         # --- Umumiy ---
@@ -541,6 +545,8 @@ TRANSLATIONS = {
 'hr_discipline_select_prompt': "Tafsilotlarni ko'rish uchun yo'nalishni tanlang:",
 'hr_report_title': "{date} uchun «{discipline}» bo'yicha tafsilotlar",
 'hr_report_summary': "▪️ E'lon qilingan: *{total_people}* kishi ▪️ Tabel topshirgan: *{brigade_count}* brigada",
+
+'main_menu_roster_summary_compact': "Bugungi tabel: *{total}* kishi (rezervda: *{reserve}*)",
 
     }
 }
