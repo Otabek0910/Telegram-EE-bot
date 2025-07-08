@@ -4579,6 +4579,12 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(report_menu, pattern="^report_menu_"))
     application.add_handler(CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview$"))
     application.add_handler(CallbackQueryHandler(report_menu, pattern="^report_menu_all$"))
+
+    application.add_handler(CallbackQueryHandler(
+    lambda update, context: generate_overview_chart(update, context, discipline_name=update.callback_query.data.replace("gen_overview_chart_", "", 1)),
+    pattern="^gen_overview_chart_"
+))
+    
     application.add_handler(CallbackQueryHandler(lambda u, c: generate_overview_chart(u, c, discipline_name=u.callback_query.data.split('_')[-1]), pattern="^gen_overview_chart_"))
     #application.add_handler(CallbackQueryHandler(show_problem_brigades_menu, pattern="^report_underperforming$"))
     application.add_handler(CallbackQueryHandler(handle_problem_brigades_button, pattern="^handle_problem_brigades_button$"))
