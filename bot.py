@@ -2043,7 +2043,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         caption_text = f"*📊 Дашборд по дисциплине «{discipline_name}»*\n_Данные за период с {min_date} по {max_date}_"
 
         user_role = check_user_role(str(query.from_user.id))
-        back_button_callback = "overview_summary_title" if (user_role.get('isAdmin') or user_role.get('managerLevel') == 1) else "report_menu_all"
+        back_button_callback = "report_overview" if (user_role.get('isAdmin') or user_role.get('managerLevel') == 1) else "report_menu_all"
         keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data=back_button_callback)]]
 
         await context.bot.send_photo(
