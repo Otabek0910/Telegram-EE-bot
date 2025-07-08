@@ -1864,7 +1864,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # Код для полной замены
 async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает меню выбора дашборда со сводкой План/Факт за сегодня (НОВАЯ ВЕРСИЯ)."""
+    """Отображает сводку План/Факт по всем дисциплинам с выбором графика."""
     query = update.callback_query
     await query.answer()
 
@@ -1872,7 +1872,6 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
     lang = get_user_language(user_id)
     user_role = check_user_role(user_id)
 
-    # Если у пользователя есть закрепленная дисциплина, сразу показываем его график
     if user_role.get('discipline') and not (user_role.get('isAdmin') or user_role.get('managerLevel') == 1):
         await generate_overview_chart(update, context, discipline_name=user_role.get('discipline'))
         return
@@ -1882,8 +1881,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
     try:
         engine = create_engine(DATABASE_URL)
         today_str = date.today().strftime('%Y-%m-%d')
-        
-        # Запрос для сбора ВСЕХ данных за сегодня
+
         pd_query = """
             SELECT r.discipline_name, r.work_type_name, r.volume, r.people_count, wt.norm_per_unit
             FROM reports r
@@ -1893,73 +1891,56 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         with engine.connect() as connection:
             df = pd.read_sql_query(text(pd_query), connection, params={'today': today_str})
 
-        message_lines = [f"📊 *{get_text('overview_summary_title', lang)}*"]
-        
+        message_lines = [f"*Сводка План / Факт — сегодня*"]
+
         all_disciplines = [row[0] for row in db_query("SELECT name FROM disciplines ORDER BY name")]
         reported_disciplines = df['discipline_name'].unique().tolist() if not df.empty else []
 
-        if not all_disciplines:
-            message_lines.append(f"\n_{get_text('overview_no_data', lang)}_")
-        else:
-            if not df.empty:
-                df['planned_volume'] = pd.to_numeric(df['people_count'], errors='coerce') * pd.to_numeric(df['norm_per_unit'], errors='coerce')
-                df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+        has_any_reports = False
 
-            has_any_reports = False # Флаг для отслеживания, были ли хоть какие-то отчеты
-
-            for i, disc_name in enumerate(all_disciplines):
-                # Фильтруем DataFrame для текущей дисциплины
-                disc_df = df[df['discipline_name'] == disc_name] if not df.empty else pd.DataFrame()
-                
-                if not disc_df.empty:
-                     has_any_reports = True
-                     if i > 0 and message_lines[-1] != f"📊 *{get_text('overview_summary_title', lang)}*":
-                        message_lines.append("")
-
-                     total_people = disc_df['people_count'].sum()
-                     avg_performance = (
-                        (disc_df['volume'].sum() / disc_df['planned_volume'].sum() * 100)
-                        if disc_df['planned_volume'].sum() > 0 else 0
-                    )
-                    
-                     message_lines.append(
-                        f"🔹 *{get_data_translation(disc_name, lang)}*\n"
-                        f"{get_text('overview_discipline_summary', lang).format(discipline='', people=int(total_people), performance=f'{avg_performance:.1f}')}"
-                    )
-
-                    # Считаем разбивку по видам работ
-                     work_summary = disc_df.groupby('work_type_name').agg(
-                        total_fact=('volume', 'sum'),
-                        total_plan=('planned_volume', 'sum')
-                    ).reset_index()
-                     work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 0)) * 100
-        
-
-                     for _, row in work_summary.iterrows():
-                        message_lines.append(
-                            f"• {get_data_translation(row['work_type_name'], lang)} — "
-                            f"{row['total_fact']:.1f} / {row['total_plan']:.1f} "
-                            f"({row['percent']:.1f}%)"
-                        )
+        for discipline in all_disciplines:
+            disc_df = df[df['discipline_name'] == discipline] if not df.empty else pd.DataFrame()
             
-            # ИЗМЕНЕНИЕ 3: Добавляем сообщение о дисциплинах без отчетов, если таковые были
-            unreported_exist = any(d not in reported_disciplines for d in all_disciplines)
-            if unreported_exist:
-                if has_any_reports:
-                    message_lines.append("")
-                message_lines.append(f"⚠️ {get_text('no_reports_for_other_disciplines', lang)}")
+            if not disc_df.empty:
+                has_any_reports = True
 
-        # ИЗМЕНЕНИЕ 4: Добавляем пустую строку перед последним запросом выбора графика
-        if len(message_lines) > 1: # Убедимся, что это не только заголовок или пустое сообщение
+                total_people = int(disc_df['people_count'].sum())
+                total_plan = (disc_df['people_count'] * disc_df['norm_per_unit']).sum()
+                total_fact = disc_df['volume'].sum()
+                avg_performance = int((total_fact / total_plan * 100) if total_plan > 0 else 0)
+
+                message_lines.append("")
+                message_lines.append(f"**{get_data_translation(discipline, lang)}**")
+                message_lines.append(f"{total_people} человек | Выработка: **{avg_performance}%**")
+
+                work_summary = disc_df.groupby('work_type_name').agg(
+                    total_fact=('volume', 'sum'),
+                    total_plan=('planned_volume', 'sum')
+                ).reset_index()
+                work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
+
+                for _, row in work_summary.iterrows():
+                    work_type = get_data_translation(row['work_type_name'], lang)
+                    fact = round(row['total_fact'], 1)
+                    plan = round(row['total_plan'], 1)
+                    percent = int(row['percent'])
+                    message_lines.append(f"— {work_type} — **{fact}** / **{plan}** (**{percent}%**)")
+
+                message_lines.append("───────────────")
+
+        if not has_any_reports:
             message_lines.append("")
-        message_lines.append(f"➡️ {get_text('overview_select_chart_prompt', lang)}")
+            message_lines.append("_Отчёты по дисциплинам отсутствуют._")
+            message_lines.append("───────────────")
 
-        # Формируем кнопки
+        message_lines.append("")
+        message_lines.append("*Выберите дисциплину для графика:*")
+
         keyboard_buttons = [
-            [InlineKeyboardButton(f"📈 {get_data_translation(discipline_name, lang)}", callback_data=f"gen_overview_chart_{discipline_name}")]
-            for discipline_name in all_disciplines
+            [InlineKeyboardButton(get_data_translation(name, lang), callback_data=f"gen_overview_chart_{name}")]
+            for name in all_disciplines
         ]
-        keyboard_buttons.append([InlineKeyboardButton(f"🔙 {get_text('back_button', lang)}", callback_data="report_menu_all")])
+        keyboard_buttons.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="report_menu_all")])
 
         await query.edit_message_text(
             text="\n".join(message_lines),
@@ -2013,7 +1994,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         fig, ax = plt.subplots(figsize=(12, fig_height), dpi=100)
         
         new_labels = [f"{name} ({perc:.0f}%)" for name, perc in zip(work_type_summary.index, work_type_summary['percentage'])]
-        work_type_summary[['Факт', 'План']].plot(kind='barh', ax=ax, width=0.8, color={'Факт': "#99EFA3", 'План': "#7A85EA"})
+        work_type_summary[['Факт', 'План']].plot(kind='barh', ax=ax, width=0.8, color={'Факт': "#D5DAD5", 'План': "#A3ADF6"})
         
         ax.set_yticks(range(len(new_labels)))
         ax.set_yticklabels(new_labels)
