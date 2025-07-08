@@ -132,6 +132,46 @@ TRANSLATIONS = {
         'roster_error_invalid_format': "❌ *Ошибка формата!* Пожалуйста, введите только числа, разделенные запятой (например: `5, 10`)",
         'roster_error_no_people': "❌ *Ошибка!* Вы не указали ни одного человека. Введите корректные данные.",
 
+        'personnel_history_title': "История табелей",
+'roster_for_period_title': "Табели по дисциплине «{discipline}» за {period}",
+'no_rosters_for_period': "На выбранный период по дисциплине «{discipline}» табели не поданы.",
+'pick_date_button': "Выбрать дату",
+'all_disciplines_option': "Все дисциплины",
+'history_prompt_date': "📅 *Введите дату (ДД.ММ.ГГГГ)* или диапазон дат через запятую (например, `01.07.2025, 07.07.2025`):",
+'all_time_button': "Все время",
+
+'report_menu_summary_title': "Общая сводка ({period})",
+'total_brigades_in_system': "Всего бригад в системе:",
+'brigades_in_discipline': "Бригад в дисциплине:",
+'summary_for_your_brigade': "Сводка по вашей бригаде ({period})",
+'reports_for_period': "Отчётов за период:",
+'reports_approved': "✅ Согласовано:",
+'reports_rejected': "❌ Отклонено:",
+'reports_pending': "⏳ Ожидает:",
+'select_report_detail': "Выберите детализацию отчёта:",
+'all_time_button': "Все время",
+'foreman_performance_button': "📊 Моя выработка",
+'personnel_status_button': "👥 Статус персонала",
+'back_to_main_menu_button': "🏠 В главное меню",
+'report_overview_button': "📊 Общий обзор (график)",
+'problem_brigades_button': "⚠️ Проблемные бригады",
+'historical_overview_button': "📅 Исторический обзор",
+'export_excel_button': "📤 Экспорт в Excel",
+'delete_report_button': "🗑️ Удалить отчет",
+
+'problem_brigades_title': "Проблемные бригады: {discipline}",
+'problem_brigades_no_report_header': "🔴 Не сдали отчет сегодня:",
+'problem_brigades_low_performance_header': "🟠 Низкая выработка (в среднем):",
+'problem_brigades_no_issues': "✅ По дисциплине «{discipline}» проблемных бригад не найдено!",
+'problem_brigades_avg_output_label': "Выработка",
+
+'low_performance_brigade_count': "📉 Бригад с низкой выработкой: *{count}*",
+
+'hr_menu_button': "👥 Людские ресурсы",
+'hr_menu_title': "Меню «Людские ресурсы»",
+'hr_menu_status_button': "📊 Статус персонала на сегодня",
+'hr_menu_history_button': "🗓️ История табелей",
+
     },
     'en': {
         # --- General ---
@@ -262,6 +302,45 @@ TRANSLATIONS = {
         'roster_error_invalid_format': "❌ *Format error!* Please enter only numbers, separated by a comma (e.g., `5, 10`)",
         'roster_error_no_people': "❌ *Error!* You haven't specified any people. Please enter correct data.",
 
+        'personnel_history_title': "Personnel Rosters History",
+'roster_for_period_title': "Rosters for «{discipline}» discipline for {period}",
+'no_rosters_for_period': "No rosters submitted for the «{discipline}» discipline for the selected period.",
+'pick_date_button': "Select Date",
+'all_disciplines_option': "All Disciplines",
+'history_prompt_date': "📅 *Enter a date (DD.MM.YYYY)* or a date range separated by a comma (e.g., `01.07.2025, 07.07.2025`):",
+'all_time_button': "All Time",
+
+'report_menu_summary_title': "Overall Summary ({period})",
+'total_brigades_in_system': "Total brigades in system:",
+'brigades_in_discipline': "Brigades in discipline:",
+'summary_for_your_brigade': "Summary for your brigade ({period})",
+'reports_for_period': "Reports for the period:",
+'reports_approved': "✅ Approved:",
+'reports_rejected': "❌ Rejected:",
+'reports_pending': "⏳ Pending:",
+'select_report_detail': "Select report details:",
+'all_time_button': "All Time",
+'foreman_performance_button': "📊 My Performance",
+'personnel_status_button': "👥 Personnel Status",
+'back_to_main_menu_button': "🏠 Main Menu",
+'report_overview_button': "📊 General Overview (chart)",
+'problem_brigades_button': "⚠️ Problem Brigades",
+'historical_overview_button': "📅 Historical Overview",
+'export_excel_button': "📤 Export to Excel",
+'delete_report_button': "🗑️ Delete Report",
+
+'problem_brigades_title': "Problem Brigades: {discipline}",
+'problem_brigades_no_report_header': "🔴 Did not submit a report today:",
+'problem_brigades_low_performance_header': "🟠 Low Performance (on average):",
+'problem_brigades_no_issues': "✅ No problem brigades found for «{discipline}» discipline!",
+'problem_brigades_avg_output_label': "Performance",
+
+'low_performance_brigade_count': "📉 Brigades with low performance: *{count}*",
+
+'hr_menu_button': "👥 Human Resources",
+'hr_menu_title': "Human Resources Menu",
+'hr_menu_status_button': "📊 Personnel Status for Today",
+'hr_menu_history_button': "🗓️ Roster History",
 
     },
     'uz': {
@@ -392,6 +471,47 @@ TRANSLATIONS = {
 
         'roster_error_invalid_format': "❌ *Format xatosi!* Iltimos, faqat vergul bilan ajratilgan raqamlarni kiriting (masalan: `5, 10`)",
         'roster_error_no_people': "❌ *Xato!* Siz birorta ham odam ko'rsatmadingiz. To'g'ri ma'lumotlarni kiriting.",
+
+        'personnel_history_title': "Tabel tarixi",
+'roster_for_period_title': "«{discipline}» yo'nalishi bo'yicha {period} uchun tabel",
+'no_rosters_for_period': "Tanlangan davr uchun «{discipline}» yo'nalishi bo'yicha tabellar topshirilmagan.",
+'pick_date_button': "Sanani tanlash",
+'all_disciplines_option': "Barcha yo'nalishlar",
+'history_prompt_date': "📅 *Sana kiriting (KK.OO.YYYY)* yoki vergul bilan ajratilgan sana oralig'ini kiriting (masalan, `01.07.2025, 07.07.2025`):",
+'all_time_button': "Butun vaqt",
+
+'report_menu_summary_title': "Umumiy hisobot ({period})",
+'total_brigades_in_system': "Tizimdagi jami brigadalar:",
+'brigades_in_discipline': "Yo'nalishdagi brigadalar:",
+'summary_for_your_brigade': "Sizning brigadangiz bo'yicha hisobot ({period})",
+'reports_for_period': "Davr uchun hisobotlar:",
+'reports_approved': "✅ Tasdiqlangan:",
+'reports_rejected': "❌ Rad etilgan:",
+'reports_pending': "⏳ Kutilmoqda:",
+'select_report_detail': "Hisobot tafsilotlarini tanlang:",
+'all_time_button': "Butun vaqt",
+'foreman_performance_button': "📊 Mening samaradorligim",
+'personnel_status_button': "👥 Xodimlar holati",
+'back_to_main_menu_button': "🏠 Asosiy menyuga",
+'report_overview_button': "📊 Umumiy ko'rinish (grafik)",
+'problem_brigades_button': "⚠️ Muammoli brigadalar",
+'historical_overview_button': "📅 Tarixiy ko'rinish",
+'export_excel_button': "📤 Excelga eksport",
+'delete_report_button': "🗑️ Hisobotni o'chirish",
+
+'problem_brigades_title': "Muammoli brigadalar: {discipline}",
+'problem_brigades_no_report_header': "🔴 Bugun hisobot topshirmaganlar:",
+'problem_brigades_low_performance_header': "🟠 Past samaradorlik (o'rtacha):",
+'problem_brigades_no_issues': "✅ «{discipline}» yo'nalishi bo'yicha muammoli brigadalar topilmadi!",
+'problem_brigades_avg_output_label': "Samaradorlik",
+
+'low_performance_brigade_count': "📉 Samaradorligi past brigadalar soni: *{count}*",
+
+'hr_menu_button': "👥 Xodimlar bo'limi",
+'hr_menu_title': "Xodimlar bo'limi menyusi",
+'hr_menu_status_button': "📊 Bugungi xodimlar holati",
+'hr_menu_history_button': "🗓️ Tabel tarixi",
+
     }
 }
 
