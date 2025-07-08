@@ -358,6 +358,26 @@ def update_user_role(user_id: str, role: str, user_info: dict, discipline: int =
 
     db_query(query, params)
 
+# Код для вставки (новая функция)
+async def send_approval_request(context: ContextTypes.DEFAULT_TYPE, user_id_str: str, request_text: str, approve_callback: str, reject_callback: str):
+    """Отправляет запрос на согласование всем администраторам и Овнеру."""
+    keyboard = [
+        [InlineKeyboardButton("✅ Подтвердить", callback_data=approve_callback)],
+        [InlineKeyboardButton("❌ Отклонить", callback_data=reject_callback)]
+    ]
+
+    admin_ids_raw = db_query("SELECT user_id FROM admins")
+    admin_ids = [row[0] for row in admin_ids_raw] if admin_ids_raw else []
+
+    # Добавляем OWNER_ID и убираем дубликаты
+    all_approvers = list(set(admin_ids + [OWNER_ID]))
+
+    for admin_id in all_approvers:
+        try:
+            await context.bot.send_message(admin_id, request_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Не удалось отправить запрос на согласование админу {admin_id} для пользователя {user_id_str}: {e}")
+
 # --- ОСНОВНЫЕ ФУНКЦИИ БОТА ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1175,30 +1195,21 @@ async def handle_manager_level(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
     request_text = (
-    f"🔐 *Запрос на регистрацию*\n\n"
-    f"▪️ *Роль:* Руководитель (Уровень 1)\n"
-    f"▪️ *Имя:* {user_info.get('first_name')} {user_info.get('last_name')}\n"
-    f"▪️ *Username:* @{user_info.get('username', 'не указан')}\n"
-    f"▪️ *Телефон:* {user_info.get('phone_number')}\n"
-    f"▪️ *UserID:* `{user_id_str}`"
+        f"🔐 *Запрос на регистрацию*\n\n"
+        f"▪️ *Роль:* Руководитель (Уровень 1)\n"
+        f"▪️ *Имя:* {user_info.get('first_name')} {user_info.get('last_name')}\n"
+        f"▪️ *Username:* @{user_info.get('username', 'не указан')}\n"
+        f"▪️ *Телефон:* {user_info.get('phone_number')}\n"
+        f"▪️ *UserID:* `{user_id_str}`"
     )
-    approve_callback = f"approve_manager_{user_id_str}"
-    reject_callback = f"reject_manager_{user_id_str}"
-    keyboard = [
-    [InlineKeyboardButton("✅ Подтвердить", callback_data=approve_callback)],
-    [InlineKeyboardButton("❌ Отклонить", callback_data=reject_callback)]
-    ]
-    admin_ids_raw = db_query("SELECT user_id FROM admins")
-    admin_ids = [row[0] for row in admin_ids_raw] if admin_ids_raw else []
-
-    # Добавляем OWNER_ID в список, если его там еще нет, и убираем дубликаты
-    all_approvers = list(set(admin_ids + [OWNER_ID]))
-
-    for admin_id in all_approvers:
-     try:
-        await context.bot.send_message(admin_id, request_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-     except Exception as e:
-        logger.error(f"Не удалось отправить запрос на согласование админу {admin_id}: {e}")
+    
+    await send_approval_request(
+        context=context,
+        user_id_str=user_id_str,
+        request_text=request_text,
+        approve_callback=f"approve_manager_{user_id_str}",
+        reject_callback=f"reject_manager_{user_id_str}"
+    )
     
     return ConversationHandler.END
 
@@ -1281,25 +1292,13 @@ async def handle_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         f"▪️ *Телефон:* {user_info.get('phone_number')}\n"
         f"▪️ *UserID:* `{user_id_str}`"
     )
-    # ... (остальной код отправки запроса админу без изменений)
-    approve_callback = f"approve_{role}_{user_id_str}"
-    reject_callback = f"reject_{role}_{user_id_str}"
-    keyboard = [
-        [InlineKeyboardButton("✅ Подтвердить", callback_data=approve_callback)],
-        [InlineKeyboardButton("❌ Отклонить", callback_data=reject_callback)]
-    ]
-    
-    admin_ids_raw = db_query("SELECT user_id FROM admins")
-    admin_ids = [row[0] for row in admin_ids_raw] if admin_ids_raw else []
-
-    # Добавляем OWNER_ID в список, если его там еще нет, и убираем дубликаты
-    all_approvers = list(set(admin_ids + [OWNER_ID]))
-
-    for admin_id in all_approvers:
-     try:
-         await context.bot.send_message(admin_id, request_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-     except Exception as e:
-        logger.error(f"Не удалось отправить запрос на согласование админу {admin_id}: {e}")
+    await send_approval_request(
+        context=context,
+        user_id_str=user_id_str,
+        request_text=request_text,
+        approve_callback=f"approve_{role}_{user_id_str}",
+        reject_callback=f"reject_{role}_{user_id_str}"
+    )
 
     return ConversationHandler.END
 
@@ -2144,69 +2143,59 @@ async def generate_discipline_dashboard(update: Update, context: ContextTypes.DE
 
 
 # Измененная функция: show_problem_brigades_menu
-async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id_to_edit: int = None, chat_id: int = None) -> None:
-    """Показывает лаконичное меню выбора дисциплин для отчета 'Проблемные бригады' с корректным подсчетом."""
-    query = update.callback_query
-    if query:
-        await query.answer()
-        # Если message_id_to_edit и chat_id не были переданы, берем их из query
-        if not message_id_to_edit:
-            message_id_to_edit = query.message.message_id
-        if not chat_id:
-            chat_id = query.message.chat_id
-    elif not message_id_to_edit or not chat_id: # Если не query и нет параметров, это ошибка
-        logger.error("show_problem_brigades_menu вызвана без query и без message_id_to_edit/chat_id")
-        return # Или отправить сообщение об ошибке
-
-    user_id = str(update.effective_user.id) # Используем effective_user для надежности
-    user_role = check_user_role(user_id)
-
-    # Этот блок уже не должен быть достигнут, т.к. редирект происходит в handle_problem_brigades_button
-    if user_role.get('discipline') and (user_role.get('isManager') and user_role.get('managerLevel') == 2 or user_role.get('isPto') or user_role.get('isKiok')):
-        discipline_name = user_role['discipline']
-        await generate_problem_brigades_report(update, context, discipline_name=discipline_name, page=1)
-        return
-
-    await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text="⏳ Собираю сводку по дисциплинам...")
+# Код для замены
+async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id_to_edit: int, chat_id: int) -> None:
+    """
+    Отображает меню выбора дисциплин для отчета 'Проблемные бригады'.
+    (ИСПРАВЛЕННАЯ ВЕРСИЯ: убрана лишняя логика и повторный query.answer())
+    """
+    # Сразу сообщаем пользователю, что мы работаем
+    await context.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id_to_edit,
+        text="⏳ Собираю сводку по проблемным бригадам..."
+    )
 
     disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
-    
     keyboard = []
     summary_lines = ["*⚠️ Проблемные бригады на сегодня:*", ""]
     today_str = date.today().strftime('%Y-%m-%d')
 
     if not disciplines:
-        await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text="В системе нет дисциплин для анализа.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")]]))
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id_to_edit,
+            text="В системе нет дисциплин для анализа.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")]])
+        )
         return
 
+    # Улучшенный и более надежный подсчет
     for disc_id, disc_name in disciplines:
-        all_brigades_raw = db_query("SELECT 1 FROM brigades WHERE discipline = %s", (disc_id,))
-        all_brigades_count = len(all_brigades_raw) if all_brigades_raw else 0
-        
-        reported_today_query = """
-            SELECT COUNT(DISTINCT b.user_id) 
-            FROM reports r 
-            JOIN brigades b ON r.foreman_name = b.brigade_name 
-            WHERE b.discipline = %s AND r.report_date = %s
+        non_reporters_query = """
+            SELECT COUNT(b.user_id)
+            FROM brigades b
+            WHERE b.discipline = %s AND NOT EXISTS (
+                SELECT 1 FROM reports r
+                WHERE r.foreman_name = b.brigade_name AND r.report_date = %s
+            )
         """
-        reported_today_raw = db_query(reported_today_query, (disc_id, today_str))
-        reported_today_count = reported_today_raw[0][0] if reported_today_raw else 0
+        non_reporters_raw = db_query(non_reporters_query, (disc_id, today_str))
+        non_reporters_count = non_reporters_raw[0][0] if non_reporters_raw else 0
 
-        non_reporters_count = all_brigades_count - reported_today_count
-        
+        # Более понятный текст для пользователя
         if non_reporters_count > 0:
             summary_lines.append(f"🔴 *{disc_name}:* не отчитались - *{non_reporters_count}*")
         else:
-            summary_lines.append(f"🟢 *{disc_name}:* не отчитались - *0*")
+            summary_lines.append(f"🟢 *{disc_name}:* все отчитались")
 
         keyboard.append([InlineKeyboardButton(f"Детально по «{disc_name}»", callback_data=f"gen_problem_report_{disc_name}_1")])
-    
-    summary_lines.append("\nВыберите дисциплину для детального просмотра:")
 
+    summary_lines.append("\nВыберите дисциплину для детального просмотра:")
     keyboard.append([InlineKeyboardButton("◀️ Назад в меню отчетов", callback_data="report_menu_all")])
-    
+
     await context.bot.edit_message_text(
-        chat_id=chat_id, 
+        chat_id=chat_id,
         message_id=message_id_to_edit,
         text="\n".join(summary_lines),
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -3740,132 +3729,83 @@ async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text("❌ Произошла ошибка при сборе данных.")
 
 # Измененная функция: generate_discipline_personnel_report
-async def generate_discipline_personnel_report(update: Update, context: ContextTypes.DEFAULT_TYPE, 
-                                                discipline_name: str = None, page: int = 1,
-                                                start_date: str = None, end_date: str = None, 
+# Код для замены
+async def generate_discipline_personnel_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                                discipline_name: str = None, start_date: str = None, end_date: str = None,
                                                 period_display_text: str = None) -> None:
-    """Генерирует детальный постраничный отчет по персоналу для конкретной дисциплины и периода."""
+    """
+    Генерирует ПРОСТУЮ ИТОГОВУЮ СВОДКУ по персоналу для дисциплины и периода. (УПРОЩЕННАЯ ВЕРСИЯ)
+    """
     query = update.callback_query
     await query.answer()
 
-    # Парсинг параметров из callback_data или использование переданных напрямую
+    # Парсинг для случая, если функция вызвана через callback
     if discipline_name is None:
         parts = query.data.split('_')
-        # Обновленный парсинг для 'ph_s_{disc}_{start}_{end}_{page}'
-        if parts[0] == 'ph' and parts[1] == 's': # personnel_history_show_...
+        if parts[0] == 'ph' and parts[1] == 's':
             discipline_name = parts[2]
             start_date = parts[3]
             end_date = parts[4]
-            page = int(parts[5]) if len(parts) > 5 else 1 # Для пагинации
-            
-            # Определяем текст для отображения периода
             start_date_obj = datetime.strptime(start_date, '%Y-%m-%d').date()
             end_date_obj = datetime.strptime(end_date, '%Y-%m-%d').date()
             if start_date_obj == end_date_obj:
                 period_display_text = f"на {start_date_obj.strftime('%d.%m.%Y')}"
-            elif (date.today() - start_date_obj).days <= 7 and (date.today() - end_date_obj).days == 0:
-                period_display_text = "за последние 7 дней"
             else:
                 period_display_text = f"за период с {start_date_obj.strftime('%d.%m.%Y')} по {end_date_obj.strftime('%d.%m.%Y')}"
-        
-        elif parts[0] == 'personnel' and parts[1] == 'detail': # personnel_detail_{disc}_{page}
-            discipline_name = parts[2]
-            page = int(parts[3])
-            start_date = date.today().strftime('%Y-%m-%d')
-            end_date = date.today().strftime('%Y-%m-%d')
-            period_display_text = "на сегодня"
 
-    await query.edit_message_text(f"⏳ Формирую детальный отчет для «{discipline_name}» {period_display_text}...")
+    await query.edit_message_text(f"⏳ Собираю сводку для «{discipline_name}» {period_display_text}...")
 
     try:
-        items_per_page = 10 
-        offset = (page - 1) * items_per_page
-
-        # Определяем ID дисциплины
+        # Получаем ID дисциплины для кнопки "Назад" и запросов
         discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
-        discipline_id = discipline_id_raw[0][0] if discipline_id_raw else None
-
-        if not discipline_id:
+        if not discipline_id_raw:
             await query.edit_message_text(f"❌ Ошибка: Дисциплина «{discipline_name}» не найдена.")
             return
+        discipline_id = discipline_id_raw[0][0]
 
-        # 1. Запрос для подсчета общего количества бригад в дисциплине, подавших табель за период
-        count_query = """
+        # Запрос 1: Получаем агрегированные данные по должностям
+        summary_query = """
+            SELECT
+                pr.role_name,
+                SUM(drd.people_count) as total_by_role
+            FROM daily_roster_details drd
+            JOIN daily_rosters dr ON drd.roster_id = dr.id
+            JOIN personnel_roles pr ON drd.role_id = pr.id
+            WHERE dr.roster_date BETWEEN %s AND %s AND pr.discipline_id = %s
+            GROUP BY pr.role_name
+            ORDER BY pr.role_name;
+        """
+        summary_data = db_query(summary_query, (start_date, end_date, discipline_id))
+
+        # Запрос 2: Считаем количество уникальных бригад, подавших табель
+        brigades_count_query = """
             SELECT COUNT(DISTINCT dr.brigade_user_id)
             FROM daily_rosters dr
             JOIN brigades b ON dr.brigade_user_id = b.user_id
             WHERE dr.roster_date BETWEEN %s AND %s AND b.discipline = %s
         """
-        total_items_raw = db_query(count_query, (start_date, end_date, discipline_id))
-        total_items = total_items_raw[0][0] if total_items_raw else 0
-        total_pages = math.ceil(total_items / items_per_page) if total_items > 0 else 1
+        brigades_count_raw = db_query(brigades_count_query, (start_date, end_date, discipline_id))
+        brigades_count = brigades_count_raw[0][0] if brigades_count_raw else 0
 
-        # 2. Запрос для получения списка бригад с их статусом занятости за период
-        data_query = """
-            SELECT 
-                b.brigade_name, 
-                SUM(dr.total_people) as total_declared_period,
-                COALESCE(SUM(r.people_count), 0) as assigned_people_period,
-                b.user_id as brigade_user_id
-            FROM daily_rosters dr
-            JOIN brigades b ON dr.brigade_user_id = b.user_id
-            LEFT JOIN reports r ON r.foreman_name = b.brigade_name AND r.report_date BETWEEN %s AND %s
-            WHERE dr.roster_date BETWEEN %s AND %s AND b.discipline = %s
-            GROUP BY b.brigade_name, b.user_id
-            ORDER BY b.brigade_name
-            LIMIT %s OFFSET %s;
-        """
-        roster_data = db_query(data_query, (start_date, end_date, start_date, end_date, discipline_id, items_per_page, offset))
+        # Формируем итоговое сообщение
+        message_lines = [f"📊 *Сводка по персоналу: «{discipline_name}»*\n_{period_display_text}_", ""]
 
-        header = f"👥 *Детализация персонала: «{discipline_name}» {period_display_text}* (Стр. {page}/{total_pages})\n"
-        
-        message_text = header
-        
-        if not roster_data:
-            message_text += "\n_Нет данных для отображения._"
+        if not summary_data:
+            message_lines.append("Нет данных за выбранный период.")
         else:
-            report_lines = []
-            for brigade_name, total_declared_period, assigned_people_period, brigade_user_id in roster_data:
-                reserve_period = total_declared_period - assigned_people_period
-                report_lines.append(f"▪️ *{brigade_name}:* Заявлено: {total_declared_period}, Занято: {assigned_people_period}, Резерв: {reserve_period}")
-                
-                # Детализация по должностям для каждой бригады за указанный период
-                roles_detail_query = """
-                    SELECT pr.role_name, SUM(drd.people_count) as total_by_role
-                    FROM daily_roster_details drd
-                    JOIN personnel_roles pr ON drd.role_id = pr.id
-                    JOIN daily_rosters dr ON drd.roster_id = dr.id
-                    WHERE dr.brigade_user_id = %s AND dr.roster_date BETWEEN %s AND %s
-                    GROUP BY pr.role_name
-                    ORDER BY pr.role_name;
-                """
-                roles_detail = db_query(roles_detail_query, (brigade_user_id, start_date, end_date))
-                if roles_detail:
-                    roles_text = ", ".join([f"{role}: {count}" for role, count in roles_detail])
-                    report_lines.append(f"    _Состав за период: {roles_text}_")
-                report_lines.append("") # Пустая строка для разделения бригад
+            total_people = sum(item[1] for item in summary_data)
+            message_lines.append(f"▪️ *Всего заявлено:* {total_people} чел.")
+            message_lines.append(f"▪️ *Активных бригад:* {brigades_count}")
+            message_lines.append("\n*Состав по должностям:*")
+            role_lines = [f"  - {role}: *{count}* чел." for role, count in summary_data]
+            message_lines.extend(role_lines)
 
-            message_text += "\n".join(report_lines)
-
-        nav_buttons = []
-        if page > 1:
-            # Обновленные callback_data для пагинации
-            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"ph_s_{discipline_name}_{start_date}_{end_date}_{page-1}"))
-        if page < total_pages:
-            # Обновленные callback_data для пагинации
-            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"ph_s_{discipline_name}_{start_date}_{end_date}_{page+1}"))
-        
-        keyboard = []
-        if nav_buttons:
-            keyboard.append(nav_buttons)
-        
-        # Кнопка назад ведет на меню выбора периода для этой дисциплины
-        keyboard.append([InlineKeyboardButton("◀️ Назад к выбору периода", callback_data=f"personnel_history_discipline_select_{discipline_name}")])
-        
-        await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        # ИСПРАВЛЕНИЕ: Кнопка "Назад" теперь ведет на выбор периода, используя ID дисциплины
+        keyboard = [[InlineKeyboardButton("◀️ Назад к выбору периода", callback_data=f"personnel_history_discipline_select_{discipline_id}")]]
+        await query.edit_message_text("\n".join(message_lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     except Exception as e:
-        logger.error(f"Ошибка при генерации детального отчета по персоналу: {e}")
+        logger.error(f"Ошибка при генерации сводки по персоналу: {e}")
         await query.edit_message_text("❌ Произошла ошибка при формировании отчета.")
 
 # Измененная функция: handle_problem_brigades_button
@@ -4542,15 +4482,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(personnel_history_discipline_select, pattern="^personnel_history_discipline_select_"))
     application.add_handler(CallbackQueryHandler(personnel_history_select_period, pattern="^personnel_history_discipline_select_")) 
     # Обновленный паттерн для generate_discipline_personnel_report при вызове из истории
-    application.add_handler(CallbackQueryHandler(
-        lambda u, c: generate_discipline_personnel_report(u, c, 
-                                                        discipline_name=u.callback_query.data.split('_')[2], # ph_s_DISCIPLINE_START_END_PAGE
-                                                        start_date=u.callback_query.data.split('_')[3],
-                                                        end_date=u.callback_query.data.split('_')[4],
-                                                        page=int(u.callback_query.data.split('_')[5]) if len(u.callback_query.data.split('_')) > 5 else 1
-                                                    ), 
-        pattern="^ph_s_"
-    ))
+    application.add_handler(CallbackQueryHandler(generate_discipline_personnel_report, pattern="^ph_s_"))
     # === КОНЕЦ ИЗМЕНЕНИЙ ===
           
     # Запускаем бота
