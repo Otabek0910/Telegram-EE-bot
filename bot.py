@@ -2214,11 +2214,10 @@ async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAU
     )
 
 async def generate_problem_brigades_report(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str = None, page: int = 1) -> None:
-    """Генерирует детальный постраничный отчет по проблемным бригадам для КОНКРЕТНОЙ дисциплины."""
+    """Генерирует детальный постраничный отчет по проблемным бригадам для КОНКРЕТНОЙ дисциплины. (ИСПРАВЛЕННАЯ ВЕРСИЯ)"""
     query = update.callback_query
     await query.answer()
 
-    # Если параметры не переданы напрямую, берем их из callback_data (для пагинации)
     if discipline_name is None:
         parts = query.data.split('_')
         discipline_name = parts[3]
@@ -2229,7 +2228,6 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
     try:
         today_str = date.today().strftime('%Y-%m-%d')
         
-        # Бригадиры, которые не сдали отчет
         non_reporters_query = """
             SELECT b.brigade_name 
             FROM brigades b
@@ -2245,7 +2243,6 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
         low_performers = set()
         engine = create_engine(DATABASE_URL)
         
-        # ИСПРАВЛЕНИЕ: Заменяем wt.work_type_name на wt.name в запросе
         pd_query = """
             SELECT r.foreman_name, r.people_count, r.volume, wt.norm_per_unit, wt.name as work_type_name_alias
             FROM reports r 
@@ -2256,7 +2253,6 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
             df = pd.read_sql_query(text(pd_query), connection, params={'discipline_name': discipline_name, 'today': today_str})
 
         if not df.empty:
-            # Используем work_type_name_alias для дальнейшей обработки
             performance_df = df[~df['work_type_name_alias'].str.contains('Прочие', case=False, na=False)].copy()
             if not performance_df.empty:
                 performance_df['planned_volume'] = pd.to_numeric(performance_df['people_count'], errors='coerce') * pd.to_numeric(performance_df['norm_per_unit'], errors='coerce')
@@ -2272,10 +2268,18 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
         items_per_page = 10
         total_items = len(final_problem_list)
 
+        # --- ИСПРАВЛЕНИЕ: Динамическая кнопка "Назад" ---
+        user_role = check_user_role(str(query.from_user.id))
+        # По умолчанию кнопка ведет в главное меню отчетов
+        back_callback = "report_menu_all" 
+        # Если это админ/овнер, то кнопка ведет к выбору дисциплин
+        if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
+            back_callback = "handle_problem_brigades_button"
+
         if total_items == 0:
             await query.edit_message_text(
                 f"✅ *По дисциплине «{discipline_name}» проблемных бригад не найдено!*",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="handle_problem_brigades_button")]]), # ИЗМЕНЕНИЕ ЗДЕСЬ
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=back_callback)]]),
                 parse_mode="Markdown"
             )
             return
@@ -2289,9 +2293,9 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
         nav_buttons = []
         if page > 1: nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"gen_problem_report_{discipline_name}_{page-1}"))
         if page < total_pages: nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"gen_problem_report_{discipline_name}_{page+1}"))
-
-        # ИЗМЕНЕНИЕ: Кнопка "Назад" теперь ведет на handle_problem_brigades_button
-        keyboard = [nav_buttons, [InlineKeyboardButton("◀️ Назад", callback_data="handle_problem_brigades_button")]]
+        
+        # Используем определенный ранее callback для кнопки "Назад"
+        keyboard = [nav_buttons, [InlineKeyboardButton("◀️ Назад", callback_data=back_callback)]]
         await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     except Exception as e:
@@ -3892,7 +3896,7 @@ async def handle_problem_brigades_button(update: Update, context: ContextTypes.D
 async def show_personnel_history_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Показывает меню выбора дисциплины или периода для исторического обзора табелей,
-    в зависимости от роли пользователя.
+    в зависимости от роли пользователя. (ИСПРАВЛЕННАЯ ВЕРСЯ)
     """
     query = update.callback_query
     await query.answer()
@@ -3900,39 +3904,53 @@ async def show_personnel_history_menu(update: Update, context: ContextTypes.DEFA
     user_id = str(query.from_user.id)
     user_role = check_user_role(user_id)
 
-    keyboard = []
-    text = ""
-
     # Если пользователь имеет закрепленную дисциплину (Рук. 2 уровня, ПТО, КИОК)
     if user_role.get('discipline') and (user_role.get('isManager') and user_role.get('managerLevel') == 2 or user_role.get('isPto') or user_role.get('isKiok')):
-        discipline_id = query.data.split('_')[-1]
-        discipline_name = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))[0][0]
-        context.user_data['personnel_history_discipline'] = discipline_name
-       
+        # Сразу берем дисциплину из профиля и сохраняем ее для следующего шага
+        context.user_data['personnel_history_discipline'] = user_role.get('discipline')
+        # Сразу переходим к выбору периода
         await personnel_history_select_period(update, context)
         return
-    # Если это Администратор или Руководитель 1 уровня (выбор дисциплины)
+        
+    # Если это Администратор или Руководитель 1 уровня (показываем выбор дисциплины)
     else:
         text = "📊 *История табелей*\n\n Выберите дисциплину для просмотра:"
-        disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
+        # ИСПРАВЛЕНИЕ: Запрашиваем и ID, и ИМЯ
+        disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
         
         if not disciplines:
             await query.edit_message_text("⚠️ В системе нет дисциплин для просмотра истории табелей.")
             return
-
+            
+        keyboard = []
         for disc_id, d_name in disciplines:
-             keyboard.append([InlineKeyboardButton(f"По «{d_name}»", callback_data=f"personnel_history_discipline_select_{disc_id}")])
-        keyboard.append([InlineKeyboardButton("◀️ Назад к отчетам", callback_data="report_menu_all")])
+            # ИСПРАВЛЕНИЕ: В callback_data передаем ID
+            keyboard.append([InlineKeyboardButton(f"По «{d_name}»", callback_data=f"personnel_history_discipline_select_{disc_id}")])
         
+        keyboard.append([InlineKeyboardButton("◀️ Назад к отчетам", callback_data="report_menu_all")])
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
 
 async def personnel_history_discipline_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает выбор дисциплины для исторического обзора и предлагает выбрать период."""
+    """
+    Обрабатывает выбор дисциплины (по ID) и предлагает выбрать период. (ИСПРАВЛЕННАЯ ВЕРСИЯ)
+    """
     query = update.callback_query
     await query.answer()
     
-    discipline_name = query.data.split('_')[-1]
+    # Получаем ID из callback'а
+    discipline_id = query.data.split('_')[-1]
+    
+    # Находим имя дисциплины по ее ID
+    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
+    if not discipline_name_raw:
+        await query.edit_message_text("❌ Ошибка: Дисциплина не найдена.")
+        return
+        
+    discipline_name = discipline_name_raw[0][0]
+    
+    # Сохраняем в контекст ИМЯ дисциплины
     context.user_data['personnel_history_discipline'] = discipline_name
 
     await personnel_history_select_period(update, context)
