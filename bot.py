@@ -48,6 +48,7 @@ REPORTS_PER_PAGE = 5
 NORM_PER_PERSON = 5 # Условная норма выработки на человека для отчета "Кто косячит"
 USERS_PER_PAGE = 10
 ELEMENTS_PER_PAGE = 10
+GETTING_HR_DATE = 30
 
 ALL_TABLE_NAMES_FOR_BACKUP = [
     'disciplines', 'construction_objects', 'work_types', 'admins', 'managers', 
@@ -3870,7 +3871,7 @@ async def get_hr_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
     message = await query.edit_message_text(get_text('history_prompt_date', lang), parse_mode="Markdown")
     context.user_data['last_bot_message_id'] = message.message_id
-    return 1 # Используем простое число для состояния
+    return GETTING_HR_DATE # Используем простое число для состояния
 
 async def process_hr_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает введенную дату и вызывает отчет."""
@@ -4320,7 +4321,7 @@ def main() -> None:
     hr_date_conv_handler = ConversationHandler(
     entry_points=[CallbackQueryHandler(get_hr_date, pattern="^hr_date_select_")],
     states={
-        1: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_hr_date)]
+        GETTING_HR_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_hr_date)]
     },
     fallbacks=[CommandHandler('cancel', show_hr_menu), CommandHandler('start', start_over)],
     per_user=True, allow_reentry=True
