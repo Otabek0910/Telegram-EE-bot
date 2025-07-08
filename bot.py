@@ -1750,6 +1750,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         period_text = "За неделю"
 
     try:
+        # ... (код для сбора статистики остается без изменений) ...
         if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
             total_brigades_raw = db_query("SELECT COUNT(*) FROM brigades")
             total_brigades = total_brigades_raw[0][0] if total_brigades_raw else 0
@@ -1767,25 +1768,20 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
              final_params = (brigade_name,) + tuple(date_params)
              message_text_intro = f"📊 *Сводка по вашей бригаде ({period_text}):*\n\n"
         
-        else: # Для всех ролей с привязанной дисциплиной (КИОК, ПТО, Менеджер ур. 2)
+        else: 
             discipline_name = user_role.get('discipline')
             if not discipline_name:
                 raise ValueError("Дисциплина не найдена для этой роли.")
                 
-            # <<< НАЧАЛО ИСПРАВЛЕНИЯ >>>
-            # Находим ID дисциплины по ее названию
             discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
             discipline_id = discipline_id_raw[0][0] if discipline_id_raw else None
             
-            # Считаем бригад по ID дисциплины
             total_brigades_raw = db_query("SELECT COUNT(*) FROM brigades WHERE discipline = %s", (discipline_id,))
             total_brigades = total_brigades_raw[0][0] if total_brigades_raw else 0
             
-            # Фильтруем отчеты по названию дисциплины
             role_filter_sql = "AND discipline_name = %s"
             final_params = (discipline_name,) + tuple(date_params)
             message_text_intro = f"📊 *Сводка по дисциплине «{discipline_name}» ({period_text}):*\n\n▪️ Бригад в дисциплине: *{total_brigades}*\n"
-            # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
 
         status_query = f"SELECT kiok_approved, COUNT(*) FROM reports WHERE 1=1 {role_filter_sql} {date_filter_sql} GROUP BY kiok_approved"
         status_counts_raw = db_query(status_query, final_params)
@@ -1809,7 +1805,6 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.error(f"Ошибка при сборе статистики для report_menu: {e}")
         message_text = "❗*Произошла ошибка при формировании сводки.*"
 
-    # --- 4. Формируем клавиатуру ---
     time_filter_buttons = [
         InlineKeyboardButton("Сегодня", callback_data="report_menu_today"),
         InlineKeyboardButton("Неделя", callback_data="report_menu_week"),
@@ -1817,20 +1812,20 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     ]
     
     dashboard_buttons = []
-    # Если это бригадир - показываем ему только его выработку
     if user_role.get('isForeman'):
          dashboard_buttons.append([InlineKeyboardButton("📊 Моя выработка", callback_data="foreman_performance")])
-    # Иначе (руководители, ПТО, КИОК) - показываем полное меню
     else:
         dashboard_buttons.append([InlineKeyboardButton("📊 Общий обзор (график)", callback_data="report_overview")])
        
-        # Кнопка "Проблемные бригады" теперь ТОЛЬКО для Менеджеров
-        if user_role.get('isManager'):
+        # === НАЧАЛО ИЗМЕНЕНИЯ: Добавляем ПТО в условие ===
+        # Кнопка "Проблемные бригады" теперь для Менеджеров и ПТО
+        if user_role.get('isManager') or user_role.get('isPto'):
           dashboard_buttons.append([InlineKeyboardButton("⚠️ Проблемные бригады", callback_data="handle_problem_brigades")])
+        # === КОНЕЦ ИЗМЕНЕНИЯ ===
 
+        if user_role.get('isManager'):
           dashboard_buttons.append([InlineKeyboardButton("📅 Исторический обзор", callback_data="report_historical")])
         
-        # Кнопка экспорта только для ПТО, КИОК и админов
         if user_role.get('isPto') or user_role.get('isKiok') or user_role.get('isAdmin'):
              dashboard_buttons.append([InlineKeyboardButton("📤 Экспорт в Excel", callback_data="get_excel_report")])
 
@@ -1840,12 +1835,10 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if user_role.get('isManager') or user_role.get('isAdmin') or user_role.get('isPto'):
              dashboard_buttons.append([InlineKeyboardButton("🗑️ Удалить отчет", callback_data="delete_report_list_1")])
 
-    # Общая кнопка "Назад в меню" для всех
     dashboard_buttons.append([InlineKeyboardButton("🏠 В главное меню", callback_data="go_back_to_main_menu")])
     
     keyboard = [time_filter_buttons] + dashboard_buttons
     
-    # 5. Редактируем сообщение "ожидание" финальным текстом и кнопками
     await wait_msg.edit_text(
         text=message_text,
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -2141,7 +2134,7 @@ async def generate_discipline_dashboard(update: Update, context: ContextTypes.DE
 
 
 async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает лаконичное меню выбора дисциплин для отчета 'Проблемные бригады'."""
+    """Показывает лаконичное меню выбора дисциплин для отчета 'Проблемные бригады' с корректным подсчетом."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("⏳ Собираю сводку по дисциплинам...")
@@ -2149,7 +2142,6 @@ async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAU
     disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
     
     keyboard = []
-    # <<< НАЧАЛО ИЗМЕНЕНИЯ: Новый формат текста >>>
     summary_lines = ["*⚠️ Проблемные бригады на сегодня:*", ""]
     today_str = date.today().strftime('%Y-%m-%d')
 
@@ -2158,16 +2150,22 @@ async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAU
         return
 
     for disc_id, disc_name in disciplines:
+        # === НАЧАЛО ИЗМЕНЕНИЯ: Корректная логика подсчета ===
+        # 1. Считаем, сколько всего бригад СЕЙЧАС в этой дисциплине
         all_brigades_raw = db_query("SELECT 1 FROM brigades WHERE discipline = %s", (disc_id,))
         all_brigades_count = len(all_brigades_raw) if all_brigades_raw else 0
         
-        # Находим только ID бригад, которые сдали отчет
-        reported_today_brigades_raw = db_query(
-            "SELECT DISTINCT b.user_id FROM reports r JOIN brigades b ON r.foreman_name = b.brigade_name WHERE r.discipline_name = %s AND r.report_date = %s",
-            (disc_name, today_str)
-        )
-        reported_today_count = len(reported_today_brigades_raw) if reported_today_brigades_raw else 0
-        
+        # 2. Считаем, сколько бригад, которые СЕЙЧАС в этой дисциплине, сдали отчет сегодня
+        reported_today_query = """
+            SELECT COUNT(DISTINCT b.user_id) 
+            FROM reports r 
+            JOIN brigades b ON r.foreman_name = b.brigade_name 
+            WHERE b.discipline = %s AND r.report_date = %s
+        """
+        reported_today_raw = db_query(reported_today_query, (disc_id, today_str))
+        reported_today_count = reported_today_raw[0][0] if reported_today_raw else 0
+        # === КОНЕЦ ИЗМЕНЕНИЯ ===
+
         non_reporters_count = all_brigades_count - reported_today_count
         
         if non_reporters_count > 0:
@@ -2178,7 +2176,6 @@ async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAU
         keyboard.append([InlineKeyboardButton(f"Детально по «{disc_name}»", callback_data=f"gen_problem_report_{disc_name}_1")])
     
     summary_lines.append("\nВыберите дисциплину для детального просмотра:")
-    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
 
     keyboard.append([InlineKeyboardButton("◀️ Назад в меню отчетов", callback_data="report_menu_all")])
     
@@ -3047,34 +3044,37 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удаляет пользователя из таблицы ролей и принудительно обновляет его меню."""
+    """
+    Удаляет пользователя, гарантированно уведомляет админа,
+    пытается уведомить пользователя и обновляет меню.
+    """
     query = update.callback_query
     await query.answer("Удаляю...", show_alert=False)
     
     parts = query.data.split('_')
     role_to_delete, user_id_to_delete = parts[2], parts[3]
     
+    # 1. Удаляем пользователя из БД
     db_query(f"DELETE FROM {role_to_delete} WHERE user_id = %s", (user_id_to_delete,))
     
-    # === НАЧАЛО ИЗМЕНЕНИЯ ===
-    # Принудительно удаляем все данные о состоянии и диалогах этого пользователя из памяти бота
-    # context._application.user_data - это доступ к данным всех пользователей
-    context._application.user_data.pop(int(user_id_to_delete), None)
-    logger.info(f"Состояние для пользователя {user_id_to_delete} было полностью сброшено.")
-    # === КОНЕЦ ИЗМЕНЕНИЯ ===
-
-    greeting_text = "⚠️ Ваша роль была удалена администратором. Для дальнейшей работы пройдите авторизацию заново."
-    # ВАЖНО: убираем последний аргумент message_id, он здесь не нужен и работает некорректно
-    await force_user_to_main_menu(context, user_id_to_delete, greeting_text)
-    
-    # Уведомляем админа об успехе
+    # 2. Сразу уведомляем админа об успехе, чтобы он получил обратную связь
     await context.bot.send_message(
         chat_id=query.message.chat_id, 
         text=f"✅ Пользователь `{user_id_to_delete}` удален из роли *{role_to_delete}*.",
         parse_mode="Markdown"
     )
-    
-    # Обновляем список у админа
+
+    # 3. Пытаемся уведомить пользователя и сбросить его состояние
+    try:
+        context._application.user_data.pop(int(user_id_to_delete), None)
+        logger.info(f"Состояние для пользователя {user_id_to_delete} было полностью сброшено администратором.")
+        
+        greeting_text = "⚠️ Ваша роль была удалена администратором. Для дальнейшей работы пройдите авторизацию заново."
+        await force_user_to_main_menu(context, user_id_to_delete, greeting_text)
+    except Exception as e:
+        logger.error(f"Не удалось уведомить пользователя {user_id_to_delete} об удалении. Возможно, бот заблокирован. Ошибка: {e}")
+
+    # 4. Обновляем список у админа
     await query.message.delete()
     query.data = f"list_users_{role_to_delete}_1"
     await list_users(update, context)
@@ -3632,16 +3632,18 @@ async def get_directories_template(update: Update, context: ContextTypes.DEFAULT
             os.remove(file_path)
 
 async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает сводку по персоналу, группируя должности по дисциплинам."""
+    """Показывает сводку по персоналу с учетом прав доступа и дисциплины пользователя."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("⏳ Собираю данные по персоналу...")
 
     today_str = date.today().strftime('%Y-%m-%d')
+    user_id = str(query.from_user.id)
+    user_role = check_user_role(user_id)
     
     try:
-        # Запрос, который сразу группирует все, что нам нужно
-        query_text = """
+        # === НАЧАЛО ИЗМЕНЕНИЯ: Добавляем фильтрацию по дисциплине ===
+        base_query_text = """
             SELECT 
                 d.name as discipline_name, 
                 pr.role_name, 
@@ -3651,10 +3653,20 @@ async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TY
             JOIN personnel_roles pr ON drd.role_id = pr.id
             JOIN disciplines d ON pr.discipline_id = d.id
             WHERE dr.roster_date = %s
-            GROUP BY d.name, pr.role_name
-            ORDER BY d.name, pr.role_name;
         """
-        full_summary = db_query(query_text, (today_str,))
+        params = [today_str]
+
+        # Если это Рук. 2 уровня или ПТО, жестко фильтруем по их дисциплине
+        if user_role.get('managerLevel') == 2 or user_role.get('isPto'):
+            user_discipline = user_role.get('discipline')
+            if user_discipline:
+                base_query_text += " AND d.name = %s"
+                params.append(user_discipline)
+        
+        # Завершаем формирование запроса
+        query_text = base_query_text + " GROUP BY d.name, pr.role_name ORDER BY d.name, pr.role_name;"
+        full_summary = db_query(query_text, tuple(params))
+        # === КОНЕЦ ИЗМЕНЕНИЯ ===
 
         message_lines = [f"👥 *Сводка по персоналу на {date.today().strftime('%d.%m.%Y')}*\n"]
         
@@ -3672,7 +3684,6 @@ async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TY
             
             message_lines.insert(1, f"*Общее количество заявленных людей: {total_people}*\n")
             
-            # Собираем итоговое сообщение
             for discipline, data in summary_by_discipline.items():
                 message_lines.append(f"\n*{discipline} (Всего: {data['total']})*")
                 message_lines.extend(data['roles'])
@@ -3680,7 +3691,6 @@ async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TY
         keyboard = []
         if full_summary:
             message_lines.append("\n\nВыберите дисциплину для детального просмотра:")
-            # Получаем уникальные имена дисциплин из нашего словаря
             for discipline_name in summary_by_discipline.keys():
                 keyboard.append([InlineKeyboardButton(f"Детально по «{discipline_name}»", callback_data=f"personnel_detail_{discipline_name}_1")])
 
