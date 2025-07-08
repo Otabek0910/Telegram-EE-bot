@@ -1924,7 +1924,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                 avg_performance_rounded = round(avg_performance, 1)
 
                 translated_discipline_name = get_data_translation(discipline_name_from_db, lang)
-                message_lines.append(f"\n✨ *{escape_markdown(translated_discipline_name, version=2)}* (Всего: {total_people} чел. | Выработка: {avg_performance_rounded:.1f}%)")
+                # Экранирование всех частей строки, которые могут содержать спецсимволы
+                message_lines.append(f"\n✨ *{escape_markdown(translated_discipline_name, version=2)}* ({escape_markdown(get_text('total_label', lang), version=2)}: {escape_markdown(str(total_people), version=2)} {escape_markdown(get_text('people_label', lang), version=2)} | {escape_markdown(get_text('avg_output_label', lang), version=2)}: {escape_markdown(f'{avg_performance_rounded:.1f}%', version=2)})")
 
                 work_summary = disc_df.groupby('work_type_name').agg(
                     total_fact=('volume', 'sum'),
@@ -1941,15 +1942,16 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                         plan = round(row['total_plan'], 1)
                         percent = round(row['percent'], 1)
 
-                        message_lines.append(f"  ▪️ {escaped_work_type}: Фактический: {fact:.1f} / Плановый: {plan:.1f} / Выработка: {percent:.1f}%")
+                        # Экранирование всех частей строки
+                        message_lines.append(f"  ▪️ {escaped_work_type}: {escape_markdown(get_text('fact_short_label', lang), version=2)}: {escape_markdown(f'{fact:.1f}', version=2)} / {escape_markdown(get_text('plan_short_label', lang), version=2)}: {escape_markdown(f'{plan:.1f}', version=2)} / {escape_markdown(get_text('output_short_label', lang), version=2)}: {escape_markdown(f'{percent:.1f}%', version=2)}")
             else:
                 translated_discipline_name = get_data_translation(discipline_name_from_db, lang)
-                message_lines.append(f"\n▪️ *{escape_markdown(translated_discipline_name, version=2)}*: {get_text('overview_no_data_for_discipline', lang)}")
+                message_lines.append(f"\n▪️ *{escape_markdown(translated_discipline_name, version=2)}*: {escape_markdown(get_text('overview_no_data_for_discipline', lang), version=2)}")
 
         if not has_any_reports_today:
-            message_lines.append(f"\n_{get_text('overview_no_reports_overall', lang)}_")
+            message_lines.append(f"\n_{escape_markdown(get_text('overview_no_reports_overall', lang), version=2)}_")
 
-        message_lines.append(f"\n*{get_text('overview_select_chart_prompt', lang)}*")
+        message_lines.append(f"\n*{escape_markdown(get_text('overview_select_chart_prompt', lang), version=2)}*")
 
         keyboard_buttons = []
         for name in all_disciplines:
@@ -1960,7 +1962,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         await wait_msg.edit_text(
             text="\n".join(message_lines),
             reply_markup=InlineKeyboardMarkup(keyboard_buttons),
-            parse_mode="Markdown"
+            parse_mode="MarkdownV2" # Указываем MarkdownV2
         )
 
     except Exception as e:
@@ -1981,15 +1983,14 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         query_text = """
             SELECT r.work_type_name, r.volume, r.people_count, r.report_date, wt.norm_per_unit 
             FROM reports r
-            JOIN disciplines d ON r.discipline_name = d.name
-            JOIN work_types wt ON d.id = wt.discipline_id AND r.work_type_name = wt.name
+            JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
             WHERE r.discipline_name = :discipline_name AND r.kiok_approved = 1
         """
         with engine.connect() as connection:
             reports_df = pd.read_sql_query(text(query_text), connection, params={'discipline_name': discipline_name})
     
         if reports_df.empty:
-            keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]]
+            keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] # Исправлено
             await query.edit_message_text(
                 text=f"⚠️ *{get_text('no_data_for_dashboard', lang).format(discipline=get_data_translation(discipline_name, lang))}*",
                 reply_markup=InlineKeyboardMarkup(keyboard),
@@ -2008,7 +2009,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         chart_df = reports_df[~reports_df['work_type_name'].str.contains('Прочие', case=False, na=False)].copy()
 
         if chart_df.empty:
-            keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]]
+            keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] # Исправлено
             await query.edit_message_text(
                 text=f"ℹ️ *{get_text('no_chart_data_excluding_other', lang).format(discipline=get_data_translation(discipline_name, lang))}*",
                 reply_markup=InlineKeyboardMarkup(keyboard),
@@ -2048,7 +2049,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         max_date = reports_df['report_date'].max().strftime('%d.%m.%Y')
         caption_text = f"*{get_text('dashboard_caption_title', lang).format(discipline=get_data_translation(discipline_name, lang))}*\n_{get_text('data_period', lang).format(min_date=min_date, max_date=max_date)}_"
 
-        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]]
+        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] # Исправлено
 
         await context.bot.send_photo(
             chat_id=query.message.chat_id,
