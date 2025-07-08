@@ -1905,7 +1905,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
         all_disciplines = [name for name, in all_disciplines_db]
         
-        message_lines = [f"📊 *{get_text('overview_summary_title', lang)}*"]
+        message_lines = [f"📊 *{escape_markdown(get_text('overview_summary_title', lang), version=2)}*"]
         has_any_reports_today = False
         
         for discipline_name_from_db in all_disciplines:
@@ -1924,7 +1924,6 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                 avg_performance_rounded = round(avg_performance, 1)
 
                 translated_discipline_name = get_data_translation(discipline_name_from_db, lang)
-                # Экранирование всех частей строки, которые могут содержать спецсимволы
                 message_lines.append(f"\n✨ *{escape_markdown(translated_discipline_name, version=2)}* ({escape_markdown(get_text('total_label', lang), version=2)}: {escape_markdown(str(total_people), version=2)} {escape_markdown(get_text('people_label', lang), version=2)} | {escape_markdown(get_text('avg_output_label', lang), version=2)}: {escape_markdown(f'{avg_performance_rounded:.1f}%', version=2)})")
 
                 work_summary = disc_df.groupby('work_type_name').agg(
@@ -1942,7 +1941,6 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                         plan = round(row['total_plan'], 1)
                         percent = round(row['percent'], 1)
 
-                        # Экранирование всех частей строки
                         message_lines.append(f"  ▪️ {escaped_work_type}: {escape_markdown(get_text('fact_short_label', lang), version=2)}: {escape_markdown(f'{fact:.1f}', version=2)} / {escape_markdown(get_text('plan_short_label', lang), version=2)}: {escape_markdown(f'{plan:.1f}', version=2)} / {escape_markdown(get_text('output_short_label', lang), version=2)}: {escape_markdown(f'{percent:.1f}%', version=2)}")
             else:
                 translated_discipline_name = get_data_translation(discipline_name_from_db, lang)
@@ -1962,12 +1960,12 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         await wait_msg.edit_text(
             text="\n".join(message_lines),
             reply_markup=InlineKeyboardMarkup(keyboard_buttons),
-            parse_mode="MarkdownV2" # Указываем MarkdownV2
+            parse_mode="MarkdownV2"
         )
 
     except Exception as e:
         logger.error(f"Ошибка в show_overview_dashboard_menu: {e}")
-        await wait_msg.edit_text(f"❌ {get_text('error_generic', lang)}")
+        await wait_msg.edit_text(f"❌ {escape_markdown(get_text('error_generic', lang), version=2)}", parse_mode="MarkdownV2")
 
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str) -> None:
     """Генерирует дашборд выработки для КОНКРЕТНОЙ дисциплины из PostgreSQL."""
@@ -1976,7 +1974,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     user_id = str(query.from_user.id)
     lang = get_user_language(user_id)
     
-    await query.edit_message_text(f"⏳ *{get_text('generating_dashboard_for', lang).format(discipline=get_data_translation(discipline_name, lang))}*", parse_mode='Markdown')
+    await query.edit_message_text(f"⏳ *{escape_markdown(get_text('generating_dashboard_for', lang).format(discipline=get_data_translation(discipline_name, lang)), version=2)}*", parse_mode='MarkdownV2')
     
     try:
         engine = create_engine(DATABASE_URL)
@@ -1990,11 +1988,11 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
             reports_df = pd.read_sql_query(text(query_text), connection, params={'discipline_name': discipline_name})
     
         if reports_df.empty:
-            keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] # Исправлено
+            keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] 
             await query.edit_message_text(
-                text=f"⚠️ *{get_text('no_data_for_dashboard', lang).format(discipline=get_data_translation(discipline_name, lang))}*",
+                text=f"⚠️ *{escape_markdown(get_text('no_data_for_dashboard', lang).format(discipline=get_data_translation(discipline_name, lang)), version=2)}*",
                 reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
+                parse_mode='MarkdownV2'
             )
             return
             
@@ -2009,11 +2007,11 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         chart_df = reports_df[~reports_df['work_type_name'].str.contains('Прочие', case=False, na=False)].copy()
 
         if chart_df.empty:
-            keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] # Исправлено
+            keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] 
             await query.edit_message_text(
-                text=f"ℹ️ *{get_text('no_chart_data_excluding_other', lang).format(discipline=get_data_translation(discipline_name, lang))}*",
+                text=f"ℹ️ *{escape_markdown(get_text('no_chart_data_excluding_other', lang).format(discipline=get_data_translation(discipline_name, lang)), version=2)}*",
                 reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='Markdown'
+                parse_mode='MarkdownV2'
             )
             return
 
@@ -2047,22 +2045,22 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
 
         min_date = reports_df['report_date'].min().strftime('%d.%m')
         max_date = reports_df['report_date'].max().strftime('%d.%m.%Y')
-        caption_text = f"*{get_text('dashboard_caption_title', lang).format(discipline=get_data_translation(discipline_name, lang))}*\n_{get_text('data_period', lang).format(min_date=min_date, max_date=max_date)}_"
+        caption_text = f"*{escape_markdown(get_text('dashboard_caption_title', lang).format(discipline=get_data_translation(discipline_name, lang)), version=2)}*\n_{escape_markdown(get_text('data_period', lang).format(min_date=min_date, max_date=max_date), version=2)}_"
 
-        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] # Исправлено
+        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] 
 
         await context.bot.send_photo(
             chat_id=query.message.chat_id,
             photo=open(dashboard_path, 'rb'),
             caption=caption_text,
-            parse_mode='Markdown',
+            parse_mode='MarkdownV2',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         await context.bot.delete_message(chat_id=query.message.chat_id, message_id=query.message.message_id)
 
     except Exception as e:
         logger.error(f"Ошибка при создании дашборда: {e}")
-        await query.edit_message_text(f"❗*{get_text('error_generic_dashboard', lang)}*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]]))
+        await query.edit_message_text(f"❗*{escape_markdown(get_text('error_generic_dashboard', lang), version=2)}*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]]), parse_mode="MarkdownV2")
 
 async def show_historical_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
