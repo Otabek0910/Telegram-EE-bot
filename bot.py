@@ -2046,14 +2046,19 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         max_date = reports_df['report_date'].max().strftime('%d.%m.%Y')
         caption_text = f"*Дашборд по дисциплине {escape_markdown(get_data_translation(discipline_name, lang), version=2)}*\n_Данные за период: {escape_markdown(min_date, version=2)} — {escape_markdown(max_date, version=2)}_"
 
-        await context.bot.send_photo(
+        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]]
+
+        sent_message = await context.bot.send_photo(
             chat_id=query.message.chat_id,
             photo=open(dashboard_path, 'rb'),
             caption=caption_text,
             parse_mode='MarkdownV2',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]]
+        # Сохраняем message_id нового сообщения, чтобы при необходимости можно было его удалить или отредактировать
+        context.user_data['last_message_id'] = sent_message.message_id
+        
+        # Удаляем старое сообщение
         await context.bot.delete_message(chat_id=query.message.chat_id, message_id=query.message.message_id)
 
     except Exception as e:
