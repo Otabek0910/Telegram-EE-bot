@@ -194,6 +194,9 @@ TRANSLATIONS = {
 'foreman_performance_output_label': "Выработка",
 'foreman_performance_back_button': "◀️ Назад к выбору отчета",
 
+'overview_summary_title': "📊 Сводка План/Факт на сегодня (без учета согласования)",
+'overview_no_data': "Нет данных для построения сводки.",
+
     },
     'en': {
         # --- General ---
@@ -386,6 +389,9 @@ TRANSLATIONS = {
 'foreman_performance_output_label': "Performance",
 'foreman_performance_back_button': "◀️ Back to report selection",
 
+'overview_summary_title': "📊 Сводка План/Факт на сегодня (без учета согласования)",
+'overview_no_data': "Нет данных для построения сводки.",
+
     },
     'uz': {
         # --- Umumiy ---
@@ -577,6 +583,9 @@ TRANSLATIONS = {
 'foreman_performance_volume_label': "Volume",
 'foreman_performance_output_label': "Performance",
 'foreman_performance_back_button': "◀️ Back to report selection",
+
+'overview_summary_title': "📊 Plan/Fact Summary for Today (regardless of approval)",
+'overview_no_data': "No data available to build the summary.",
 
     }
 }

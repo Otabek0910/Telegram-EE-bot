@@ -1858,46 +1858,80 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode='Markdown'
     )
 
+# Код для полной замены
+
 async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Показывает меню выбора дашборда для админов или сразу генерирует
-    дашборд для пользователей с привязанной дисциплиной.
+    Показывает меню выбора дашборда со сводкой План/Факт за сегодня (НОВАЯ ВЕРСИЯ).
     """
     query = update.callback_query
     await query.answer()
 
-    user_role = check_user_role(str(query.from_user.id))
+    user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
+    user_role = check_user_role(user_id)
 
-    # Если у пользователя полный доступ (Админ или Рук. 1 уровня) - показываем меню выбора
-    if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-        # Удаляем предыдущее сообщение, чтобы не было мусора
-        await query.message.delete()
+    # Если у пользователя есть закрепленная дисциплина, сразу показываем его график
+    if user_role.get('discipline') and not (user_role.get('isAdmin') or user_role.get('managerLevel') == 1):
+        await generate_overview_chart(update, context, discipline_name=user_role.get('discipline'))
+        return
+
+    # Для админов и рук. 1 уровня собираем сводку
+    await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
+
+    try:
+        engine = create_engine(DATABASE_URL)
+        today_str = date.today().strftime('%Y-%m-%d')
         
+        # Запрос для сбора данных по плану и факту за сегодня по всем дисциплинам
+        pd_query = """
+            SELECT r.discipline_name, r.volume, r.people_count, wt.norm_per_unit
+            FROM reports r
+            JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
+            WHERE r.report_date = :today
+        """
+        with engine.connect() as connection:
+            df = pd.read_sql_query(text(pd_query), connection, params={'today': today_str})
+
+        summary_lines = [f"*{get_text('overview_summary_title', lang)}*"]
+        if df.empty:
+            summary_lines.append(f"\n_{get_text('overview_no_data', lang)}_")
+        else:
+            df['planned_volume'] = pd.to_numeric(df['people_count']) * pd.to_numeric(df['norm_per_unit'])
+            df['volume'] = pd.to_numeric(df['volume'])
+            
+            discipline_summary = df.groupby('discipline_name').agg(
+                total_fact=('volume', 'sum'),
+                total_plan=('planned_volume', 'sum')
+            ).reset_index()
+
+            for _, row in discipline_summary.iterrows():
+                disc_name = row['discipline_name']
+                fact = row['total_fact']
+                plan = row['total_plan']
+                percent = (fact / plan * 100) if plan > 0 else 0
+                summary_lines.append(f"\n- *{get_data_translation(disc_name, lang)}*: `{fact:.1f} / {plan:.1f} ({percent:.1f}%)`")
+
+        summary_lines.append("\n\n*Выберите дисциплину для просмотра графика:*")
+        
+        # Формируем кнопки
         disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
-        
         keyboard_buttons = []
         if disciplines:
             for (discipline_name,) in disciplines:
-                keyboard_buttons.append([InlineKeyboardButton(f"Дашборд «{discipline_name}»", callback_data=f"gen_overview_chart_{discipline_name}")])
+                keyboard_buttons.append([InlineKeyboardButton(f"Дашборд «{get_data_translation(discipline_name, lang)}»", callback_data=f"gen_overview_chart_{discipline_name}")])
         
-        keyboard_buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")])
+        keyboard_buttons.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="report_menu_all")])
         
-        # Отправляем новое сообщение с меню
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="📊 *Выберите дашборд выработки для просмотра:*",
+        await query.edit_message_text(
+            text="\n".join(summary_lines),
             reply_markup=InlineKeyboardMarkup(keyboard_buttons),
             parse_mode="Markdown"
         )
-    # Иначе (для ПТО, КИОК, Рук. 2 уровня) - генерируем дашборд только для их дисциплины
-    else:
-        discipline = user_role.get('discipline')
-        if not discipline:
-            await query.edit_message_text(text="❗️*Ошибка:* Не удалось определить вашу дисциплину для построения дашборда.")
-            return
-        
-        # Сразу вызываем функцию-генератор графика, передавая ей нужную дисциплину
-        await generate_overview_chart(update, context, discipline_name=discipline)
+
+    except Exception as e:
+        logger.error(f"Ошибка в show_overview_dashboard_menu: {e}")
+        await query.edit_message_text(f"❌ {get_text('error_generic', lang)}")
 
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str) -> None:
     """Генерирует дашборд выработки для КОНКРЕТНОЙ дисциплины из PostgreSQL."""
