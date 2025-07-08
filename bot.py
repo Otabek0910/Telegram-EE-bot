@@ -4582,7 +4582,7 @@ def main() -> None:
 
     application.add_handler(CallbackQueryHandler(
     lambda update, context: generate_overview_chart(update, context, discipline_name=update.callback_query.data.replace("gen_overview_chart_", "", 1)),
-    pattern="^gen_overview_chart_"
+    pattern=r"^gen_overview_chart_"
 ))
     
     application.add_handler(CallbackQueryHandler(lambda u, c: generate_overview_chart(u, c, discipline_name=u.callback_query.data.split('_')[-1]), pattern="^gen_overview_chart_"))
