@@ -3905,23 +3905,23 @@ async def show_personnel_history_menu(update: Update, context: ContextTypes.DEFA
 
     # Если пользователь имеет закрепленную дисциплину (Рук. 2 уровня, ПТО, КИОК)
     if user_role.get('discipline') and (user_role.get('isManager') and user_role.get('managerLevel') == 2 or user_role.get('isPto') or user_role.get('isKiok')):
-        discipline_name = user_role['discipline']
-        # Сохраняем дисциплину в user_data для последующих шагов
+        discipline_id = query.data.split('_')[-1]
+        discipline_name = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))[0][0]
         context.user_data['personnel_history_discipline'] = discipline_name
-        # Сразу переходим к выбору периода
+       
         await personnel_history_select_period(update, context)
         return
     # Если это Администратор или Руководитель 1 уровня (выбор дисциплины)
     else:
-        text = "📊 *История табелей*\n\nВыберите дисциплину для просмотра:"
+        text = "📊 *История табелей*\n\n Выберите дисциплину для просмотра:"
         disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
         
         if not disciplines:
             await query.edit_message_text("⚠️ В системе нет дисциплин для просмотра истории табелей.")
             return
 
-        for d_name, in disciplines:
-            keyboard.append([InlineKeyboardButton(f"По «{d_name}»", callback_data=f"personnel_history_discipline_select_{d_name}")])
+        for disc_id, d_name in disciplines:
+             keyboard.append([InlineKeyboardButton(f"По «{d_name}»", callback_data=f"personnel_history_discipline_select_{disc_id}")])
         keyboard.append([InlineKeyboardButton("◀️ Назад к отчетам", callback_data="report_menu_all")])
         
 
