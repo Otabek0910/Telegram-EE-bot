@@ -4519,10 +4519,10 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(confirm_reset_roster, pattern="^reset_roster_"))
     application.add_handler(CallbackQueryHandler(execute_reset_roster, pattern="^execute_reset_roster_"))
 
-   # === НАЧАЛО ИЗМЕНЕНИЙ: ДОБАВЛЕНИЕ НОВЫХ ОБРАБОТЧИКОВ ИСТОРИИ ПЕРСОНАЛА ===
+     # === НАЧАЛО ИЗМЕНЕНИЙ: ДОБАВЛЕНИЕ НОВЫХ ОБРАБОТЧИКОВ ИСТОРИИ ПЕРСОНАЛА ===
     application.add_handler(CallbackQueryHandler(show_personnel_history_menu, pattern="^personnel_history_menu$"))
     application.add_handler(CallbackQueryHandler(personnel_history_discipline_select, pattern="^personnel_history_discipline_select_"))
-    application.add_handler(CallbackQueryHandler(personnel_history_select_period, pattern="^personnel_history_period_select_")) 
+    application.add_handler(CallbackQueryHandler(personnel_history_select_period, pattern="^personnel_history_discipline_select_")) 
     # Обновленный паттерн для generate_discipline_personnel_report при вызове из истории
     application.add_handler(CallbackQueryHandler(
         lambda u, c: generate_discipline_personnel_report(u, c, 
@@ -4534,7 +4534,7 @@ def main() -> None:
         pattern="^ph_s_"
     ))
     # === КОНЕЦ ИЗМЕНЕНИЙ ===
-            
+          
     # Запускаем бота
     logger.info("Бот запущен...")
     application.run_polling(drop_pending_updates=True)
