@@ -19,7 +19,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 from dotenv import load_dotenv
-
+from telegram.helpers import escape_markdown
 from sqlalchemy import create_engine, text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -1193,14 +1193,17 @@ async def handle_manager_level(update: Update, context: ContextTypes.DEFAULT_TYP
     user_info['pending_message_ids'] = [text_message.message_id, emoji_message.message_id]
     context.bot_data[user_id_str] = user_info
 
+    username = user_info.get('username', 'не указан')
+    # Экранируем спецсимволы в юзернейме
+    escaped_username = escape_markdown(username, version=2)
 
     request_text = (
-        f"🔐 *Запрос на регистрацию*\n\n"
-        f"▪️ *Роль:* Руководитель (Уровень 1)\n"
-        f"▪️ *Имя:* {user_info.get('first_name')} {user_info.get('last_name')}\n"
-        f"▪️ *Username:* @{user_info.get('username', 'не указан')}\n"
-        f"▪️ *Телефон:* {user_info.get('phone_number')}\n"
-        f"▪️ *UserID:* `{user_id_str}`"
+    f"🔐 *Запрос на регистрацию*\n\n"
+    f"▪️ *Роль:* Руководитель (Уровень 1)\n"
+    f"▪️ *Имя:* {user_info.get('first_name')} {user_info.get('last_name')}\n"
+    f"▪️ *Username:* @{escaped_username}\n"
+    f"▪️ *Телефон:* {user_info.get('phone_number')}\n"
+    f"▪️ *UserID:* `{user_id_str}`"
     )
     
     await send_approval_request(
@@ -1283,12 +1286,16 @@ async def handle_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     role_rus_map = {'manager': 'Руководителя (Ур. 2)', 'foreman': 'Бригадира', 'pto': 'ПТО', 'kiok': 'КИОК'}
     role_rus = role_rus_map.get(role, 'Неизвестно')
 
+    username = user_info.get('username', 'не указан')
+    # Экранируем спецсимволы в юзернейме
+    escaped_username = escape_markdown(username, version=2)
+
     request_text = (
         f"🔐 *Запрос на регистрацию*\n\n"
         f"▪️ *Роль:* {role_rus}\n"
         f"▪️ *Дисциплина:* {discipline_name_for_text}\n"
         f"▪️ *Имя:* {user_info.get('first_name')} {user_info.get('last_name')}\n"
-        f"▪️ *Username:* @{user_info.get('username', 'не указан')}\n"
+        f"▪️ *Username:* @{escaped_username}\n"
         f"▪️ *Телефон:* {user_info.get('phone_number')}\n"
         f"▪️ *UserID:* `{user_id_str}`"
     )
