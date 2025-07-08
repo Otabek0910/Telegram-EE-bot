@@ -4622,7 +4622,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(show_hr_menu, pattern="^hr_menu$"))
     application.add_handler(CallbackQueryHandler(show_paginated_brigade_report, pattern="^hr_report_"))
     application.add_handler(CallbackQueryHandler(select_language_menu, pattern="^select_language$"))
-  
+    application.add_handler(CallbackQueryHandler(generate_overview_chart, pattern="^report_overview$"))
           
     # Запускаем бота
     logger.info("Бот запущен...")
