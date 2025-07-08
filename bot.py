@@ -1860,10 +1860,10 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # Код для полной замены
 
+# Код для полной замены
+
 async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Показывает меню выбора дашборда со сводкой План/Факт за сегодня (НОВАЯ ВЕРСИЯ).
-    """
+    """Показывает меню выбора дашборда со сводкой План/Факт за сегодня (НОВАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
 
@@ -1876,16 +1876,15 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         await generate_overview_chart(update, context, discipline_name=user_role.get('discipline'))
         return
 
-    # Для админов и рук. 1 уровня собираем сводку
     await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
 
     try:
         engine = create_engine(DATABASE_URL)
         today_str = date.today().strftime('%Y-%m-%d')
         
-        # Запрос для сбора данных по плану и факту за сегодня по всем дисциплинам
+        # Запрос для сбора ВСЕХ данных за сегодня
         pd_query = """
-            SELECT r.discipline_name, r.volume, r.people_count, wt.norm_per_unit
+            SELECT r.discipline_name, r.work_type_name, r.volume, r.people_count, wt.norm_per_unit
             FROM reports r
             JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
             WHERE r.report_date = :today
@@ -1893,38 +1892,65 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         with engine.connect() as connection:
             df = pd.read_sql_query(text(pd_query), connection, params={'today': today_str})
 
-        summary_lines = [f"*{get_text('overview_summary_title', lang)}*"]
-        if df.empty:
-            summary_lines.append(f"\n_{get_text('overview_no_data', lang)}_")
+        message_lines = [f"*{get_text('overview_summary_title', lang)}*"]
+        
+        all_disciplines = [row[0] for row in db_query("SELECT name FROM disciplines ORDER BY name")]
+
+        if not all_disciplines:
+            message_lines.append(f"\n_{get_text('overview_no_data', lang)}_")
         else:
-            df['planned_volume'] = pd.to_numeric(df['people_count']) * pd.to_numeric(df['norm_per_unit'])
-            df['volume'] = pd.to_numeric(df['volume'])
-            
-            discipline_summary = df.groupby('discipline_name').agg(
-                total_fact=('volume', 'sum'),
-                total_plan=('planned_volume', 'sum')
-            ).reset_index()
+            if not df.empty:
+                df['planned_volume'] = pd.to_numeric(df['people_count'], errors='coerce') * pd.to_numeric(df['norm_per_unit'], errors='coerce')
+                df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
+                df['output_percentage'] = (df['volume'] / df['planned_volume'].replace(0, 1)) * 100
 
-            for _, row in discipline_summary.iterrows():
-                disc_name = row['discipline_name']
-                fact = row['total_fact']
-                plan = row['total_plan']
-                percent = (fact / plan * 100) if plan > 0 else 0
-                summary_lines.append(f"\n- *{get_data_translation(disc_name, lang)}*: `{fact:.1f} / {plan:.1f} ({percent:.1f}%)`")
+            for disc_name in all_disciplines:
+                # Фильтруем DataFrame для текущей дисциплины
+                disc_df = df[df['discipline_name'] == disc_name] if not df.empty else pd.DataFrame()
+                
+                message_lines.append(f"\n- *{get_data_translation(disc_name, lang)}*")
 
-        summary_lines.append("\n\n*Выберите дисциплину для просмотра графика:*")
+                if disc_df.empty:
+                    message_lines.append(get_text('overview_discipline_no_reports', lang))
+                    continue
+
+                # Считаем общие показатели по дисциплине
+                total_people = disc_df['people_count'].sum()
+                avg_performance = (disc_df['volume'].sum() / disc_df['planned_volume'].sum() * 100) if disc_df['planned_volume'].sum() > 0 else 0
+                
+                message_lines[len(message_lines)-1] = get_text('overview_discipline_summary', lang).format(
+                    discipline=get_data_translation(disc_name, lang),
+                    people=int(total_people),
+                    performance=f"{avg_performance:.1f}"
+                )
+                
+                # Считаем разбивку по видам работ
+                work_summary = disc_df.groupby('work_type_name').agg(
+                    total_fact=('volume', 'sum'),
+                    total_plan=('planned_volume', 'sum')
+                ).reset_index()
+                work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
+                
+                for _, row in work_summary.iterrows():
+                    message_lines.append(get_text('overview_work_type_line', lang).format(
+                        work_type=get_data_translation(row['work_type_name'], lang),
+                        fact=row['total_fact'],
+                        plan=row['total_plan'],
+                        percent=row['percent']
+                    ))
+
+        message_lines.append(get_text('overview_select_chart_prompt', lang))
         
         # Формируем кнопки
-        disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
         keyboard_buttons = []
-        if disciplines:
-            for (discipline_name,) in disciplines:
+        if all_disciplines:
+            for discipline_name in all_disciplines:
                 keyboard_buttons.append([InlineKeyboardButton(f"Дашборд «{get_data_translation(discipline_name, lang)}»", callback_data=f"gen_overview_chart_{discipline_name}")])
         
         keyboard_buttons.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="report_menu_all")])
         
         await query.edit_message_text(
-            text="\n".join(summary_lines),
+            text="\n".join(message_lines),
             reply_markup=InlineKeyboardMarkup(keyboard_buttons),
             parse_mode="Markdown"
         )

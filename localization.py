@@ -197,6 +197,12 @@ TRANSLATIONS = {
 'overview_summary_title': "📊 Сводка План/Факт на сегодня (без учета согласования)",
 'overview_no_data': "Нет данных для построения сводки.",
 
+'overview_discipline_summary': "*{discipline}* (Всего: {people} чел. | Ср. выработка: {performance}%)",
+'overview_work_type_line': "  - {work_type}: `{fact:.1f}/{plan:.1f} ({percent:.1f}%)`",
+'overview_discipline_no_reports': "  - _{get_text('no_reports_today', lang)}_",
+'overview_select_chart_prompt': "\n*Выберите дисциплину для просмотра графика:*",
+'no_reports_today': "На сегодня отчеты не поданы.",
+
     },
     'en': {
         # --- General ---
@@ -392,6 +398,12 @@ TRANSLATIONS = {
 'overview_summary_title': "📊 Сводка План/Факт на сегодня (без учета согласования)",
 'overview_no_data': "Нет данных для построения сводки.",
 
+'overview_discipline_summary': "*{discipline}* (Всего: {people} чел. | Ср. выработка: {performance}%)",
+'overview_work_type_line': "  - {work_type}: `{fact:.1f}/{plan:.1f} ({percent:.1f}%)`",
+'overview_discipline_no_reports': "  - _{get_text('no_reports_today', lang)}_",
+'overview_select_chart_prompt': "\n*Выберите дисциплину для просмотра графика:*",
+'no_reports_today': "На сегодня отчеты не поданы.",
+
     },
     'uz': {
         # --- Umumiy ---
@@ -586,6 +598,12 @@ TRANSLATIONS = {
 
 'overview_summary_title': "📊 Plan/Fact Summary for Today (regardless of approval)",
 'overview_no_data': "No data available to build the summary.",
+
+'overview_discipline_summary': "*{discipline}* (Jami: {people} kishi | O'rt. samaradorlik: {performance}%)",
+'overview_work_type_line': "  - {work_type}: `{fact:.1f}/{plan:.1f} ({percent:.1f}%)`",
+'overview_discipline_no_reports': "  - _{get_text('no_reports_today', lang)}_",
+'overview_select_chart_prompt': "\n*Grafikni ko'rish uchun yo'nalishni tanlang:*",
+'no_reports_today': "Bugungi kun uchun hisobotlar topshirilmagan.",
 
     }
 }
