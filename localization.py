@@ -178,6 +178,10 @@ TRANSLATIONS = {
 'no_rosters_today': "На сегодня табели еще не поданы.",
 'roster_details_by_brigade_title': "👥 Детализация по «{discipline}» за {period}",
 
+'hr_discipline_select_prompt': "Выберите дисциплину для просмотра детализации:",
+'hr_report_title': "Детализация по «{discipline}» за {date}",
+'hr_report_summary': "▪️ Заявлено: *{total_people}* чел. ▪️ Сдали табель: *{brigade_count}* бригад",
+
     },
     'en': {
         # --- General ---
@@ -354,6 +358,10 @@ TRANSLATIONS = {
 'no_rosters_today': "No rosters have been submitted for today yet.",
 'roster_details_by_brigade_title': "👥 Details for «{discipline}» for {period}",
 
+'hr_discipline_select_prompt': "Select a discipline to view details:",
+'hr_report_title': "Details for «{discipline}» for {date}",
+'hr_report_summary': "▪️ Declared: *{total_people}* people ▪️ Rosters submitted: *{brigade_count}* brigades",
+
     },
     'uz': {
         # --- Umumiy ---
@@ -529,6 +537,10 @@ TRANSLATIONS = {
 'total_people_today': "▪️ Bugun jami e'lon qilingan: *{total}* kishi",
 'no_rosters_today': "Bugungi kun uchun hali tabel topshirilmagan.",
 'roster_details_by_brigade_title': "👥 {period} uchun «{discipline}» bo'yicha tafsilotlar",
+
+'hr_discipline_select_prompt': "Tafsilotlarni ko'rish uchun yo'nalishni tanlang:",
+'hr_report_title': "{date} uchun «{discipline}» bo'yicha tafsilotlar",
+'hr_report_summary': "▪️ E'lon qilingan: *{total_people}* kishi ▪️ Tabel topshirgan: *{brigade_count}* brigada",
 
     }
 }
