@@ -1824,7 +1824,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # === НАЧАЛО ИЗМЕНЕНИЯ: Добавляем ПТО в условие ===
         # Кнопка "Проблемные бригады" теперь для Менеджеров и ПТО
         if user_role.get('isManager') or user_role.get('isPto'):
-          dashboard_buttons.append([InlineKeyboardButton("⚠️ Проблемные бригады", callback_data="handle_problem_brigades")])
+          dashboard_buttons.append([InlineKeyboardButton("⚠️ Проблемные бригады", callback_data="handle_problem_brigades_button")])
         # === КОНЕЦ ИЗМЕНЕНИЯ ===
 
         if user_role.get('isManager'):
