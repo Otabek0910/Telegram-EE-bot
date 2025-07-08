@@ -1924,6 +1924,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                     # Считаем общие показатели по дисциплине
                     total_people = disc_df['people_count'].sum()
                     avg_performance = (disc_df['volume'].sum() / disc_df['planned_volume'].sum() * 100) if disc_df['planned_volume'].sum() > 0 else 0
+                    escaped_disc_name = escape_markdown(get_data_translation(disc_name, lang), version=2) 
+
                     
                     message_lines.append(
                         get_text('overview_discipline_summary', lang).format(
@@ -1939,7 +1941,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                         total_plan=('planned_volume', 'sum')
                     ).reset_index()
                     work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
-                    
+                    escaped_work_type = escape_markdown(get_data_translation(row['work_type_name'], lang), version=2)
+
                     for _, row in work_summary.iterrows():
                         message_lines.append(get_text('overview_work_type_line', lang).format(
                             work_type=get_data_translation(row['work_type_name'], lang),

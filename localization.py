@@ -197,6 +197,16 @@ TRANSLATIONS = {
 'overview_summary_title': "📊 Сводка План/Факт на сегодня (без учета согласования)",
 'overview_no_data': "Нет данных для построения сводки.",
 
+'loading_please_wait': 'Загрузка, пожалуйста, подождите...',
+        'overview_summary_title': 'Сводка План/Факт на сегодня',
+        'overview_discipline_summary': '📊 *{discipline}* (Всего: {people} чел. | Ср. выработка: {performance}%)',
+        'overview_work_type_line': '{work_type}: Ф: {fact:.1f} / П: {plan:.1f} / В-ка: {percent:.1f}%',
+        'overview_select_chart_prompt': 'Выберите дисциплину для просмотра графика:',
+        'no_reports_for_other_disciplines': 'По остальным дисциплинам сегодня отчеты не поданы.',
+        'overview_no_data': 'Пока нет данных для отображения сводки.', # Если эта строка была удалена, верните ее.
+        'error_generic': 'Произошла ошибка. Пожалуйста, попробуйте еще раз.',
+        'back_button': '◀️ Назад',
+
     },
     'en': {
         # --- General ---
@@ -392,6 +402,16 @@ TRANSLATIONS = {
 'overview_summary_title': "📊 Сводка План/Факт на сегодня (без учета согласования)",
 'overview_no_data': "Нет данных для построения сводки.",
 
+'loading_please_wait': 'Loading, please wait...',
+        'overview_summary_title': 'Plan/Fact Summary for Today',
+        'overview_discipline_summary': '📊 *{discipline}* (Total: {people} pers. | Avg. Output: {performance}%)',
+        'overview_work_type_line': '{work_type}: F: {fact:.1f} / P: {plan:.1f} / Output: {percent:.1f}%',
+        'overview_select_chart_prompt': 'Select a discipline to view the chart:',
+        'no_reports_for_other_disciplines': 'No reports submitted for other disciplines today.',
+        'overview_no_data': 'No data available for the overview yet.',
+        'error_generic': 'An error occurred. Please try again.',
+        'back_button': '◀️ Back',
+
     },
     'uz': {
         # --- Umumiy ---
@@ -586,6 +606,16 @@ TRANSLATIONS = {
 
 'overview_summary_title': "📊 Plan/Fact Summary for Today (regardless of approval)",
 'overview_no_data': "No data available to build the summary.",
+
+'loading_please_wait': 'Yuklanmoqda, iltimos kuting...',
+        'overview_summary_title': 'Bugungi Reja/Fakt Hisoboti',
+        'overview_discipline_summary': '📊 *{discipline}* (Jami: {people} kishi | O\'rt. Ish unumdorligi: {performance}%)',
+        'overview_work_type_line': '{work_type}: F: {fact:.1f} / R: {plan:.1f} / Ish unumdorligi: {percent:.1f}%',
+        'overview_select_chart_prompt': 'Diagrammani ko\'rish uchun yo\'nalishni tanlang:',
+        'no_reports_for_other_disciplines': 'Boshqa yo\'nalishlar bo\'yicha bugun hisobotlar berilmadi.',
+        'overview_no_data': 'Hozircha umumiy hisobot uchun ma\'lumotlar mavjud emas.',
+        'error_generic': 'Xatolik yuz berdi. Iltimos, qayta urinib ko\'ring.',
+        'back_button': '◀️ Orqaga',
 
     }
 }
