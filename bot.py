@@ -1864,7 +1864,6 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # Код для полной замены
 async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отображает сводку План / Факт по всем дисциплинам с выбором графика."""
     query = update.callback_query
     await query.answer()
 
@@ -1872,7 +1871,6 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
     lang = get_user_language(user_id)
     user_role = check_user_role(user_id)
 
-    # Если роль — обычный пользователь без выбора дисциплины
     if user_role.get('discipline') and not (user_role.get('isAdmin') or user_role.get('managerLevel') == 1):
         await generate_overview_chart(update, context, discipline_name=user_role.get('discipline'))
         return
@@ -1901,14 +1899,13 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         has_any_reports = False
 
         for discipline in all_disciplines:
-            disc_df = df[df['discipline_name'] == discipline] if not df.empty else pd.DataFrame()
+            # Сравнение без учёта регистра
+            disc_df = df[df['discipline_name'].str.lower() == discipline.lower()] if not df.empty else pd.DataFrame()
 
             if not disc_df.empty:
                 has_any_reports = True
 
-                # Добавляем planned_volume для корректной работы
                 disc_df['planned_volume'] = disc_df['people_count'] * disc_df['norm_per_unit']
-
                 total_people = int(disc_df['people_count'].sum())
                 total_plan = disc_df['planned_volume'].sum()
                 total_fact = disc_df['volume'].sum()
@@ -1936,7 +1933,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
         if not has_any_reports:
             message_lines.append("")
-            message_lines.append("_Отчёты по дисциплинам отсутствуют._")
+            message_lines.append("_Отчёты по всем дисциплинам на сегодня отсутствуют._")
             message_lines.append("───────────────")
 
         message_lines.append("")
@@ -1961,6 +1958,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
             await query.edit_message_text("❗ *Произошла ошибка при формировании сводки.*\n_Пожалуйста, попробуйте позже._", parse_mode="Markdown")
         except:
             pass
+
 
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str) -> None:
     """Генерирует дашборд выработки для КОНКРЕТНОЙ дисциплины из PostgreSQL."""
