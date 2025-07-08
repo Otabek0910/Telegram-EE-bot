@@ -2051,8 +2051,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
             parse_mode='MarkdownV2',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        await context.bot.delete_message(chat_id=query.message.chat_id, message_id=query.message.message_id)
-
+        
     except Exception as e:
         logger.error(f"Ошибка при создании дашборда: {e}")
         await query.edit_message_text(f"❗*{escape_markdown(get_text('error_generic_dashboard', lang), version=2)}*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]]), parse_mode="MarkdownV2")
