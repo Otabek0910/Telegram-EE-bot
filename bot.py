@@ -1861,7 +1861,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # Код для полной замены
 
 
-async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None: # noqa: E501
     query = update.callback_query
     await query.answer()
 
@@ -1869,7 +1869,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
     lang = get_user_language(user_id)
     user_role = check_user_role(user_id)
 
-    if is_simple_user(user_role):
+    if user_role.get('discipline') and not (user_role.get('isAdmin') or user_role.get('managerLevel') == 1):
         await generate_overview_chart(update, context, discipline_name=user_role.get('discipline'))
         return
 
@@ -1879,58 +1879,72 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         engine = create_engine(DATABASE_URL)
         today_str = date.today().strftime('%Y-%m-%d')
 
-        sql = """
+        pd_query = """
             SELECT r.discipline_name, r.work_type_name, r.volume, r.people_count, wt.norm_per_unit
             FROM reports r
-            JOIN work_types wt ON r.work_type_name = wt.name
-            JOIN disciplines d ON wt.discipline_id = d.id AND r.discipline_name = d.name
+            JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
             WHERE r.report_date = :today
         """
 
-        with engine.connect() as conn:
-            df = pd.read_sql_query(text(sql), conn, params={'today': today_str})
+        with engine.connect() as connection:
+            df = pd.read_sql_query(text(pd_query), connection, params={'today': today_str})
 
+        # Используем ключи для локализации
         message_lines = [f"*📊 {get_text('overview_summary_title', lang)}*"]
+
         all_disciplines = [row[0] for row in db_query("SELECT name FROM disciplines ORDER BY name")]
         has_any_reports = False
 
         for discipline in all_disciplines:
+            # Сравнение без учёта регистра
             disc_df = df[df['discipline_name'].str.lower() == discipline.lower()] if not df.empty else pd.DataFrame()
-            if disc_df.empty:
-                continue
 
-            has_any_reports = True
-            disc_df['planned_volume'] = disc_df['people_count'] * disc_df['norm_per_unit']
-            total_people = int(disc_df['people_count'].sum())
-            total_plan = disc_df['planned_volume'].sum()
-            total_fact = disc_df['volume'].sum()
-            avg_performance = int((total_fact / total_plan * 100) if total_plan else 0)
+            if not disc_df.empty:
+                has_any_reports = True
 
-            message_lines.append("")
-            message_lines.append(f"*{get_data_translation(discipline, lang)}*")
+                disc_df['planned_volume'] = disc_df['people_count'] * disc_df['norm_per_unit']
+                total_people = int(disc_df['people_count'].sum())
+                total_plan = disc_df['planned_volume'].sum()
+                total_fact = disc_df['volume'].sum()
+                # ИСПРАВЛЕНИЕ: Замена &gt; на >
+                avg_performance = int((total_fact / total_plan * 100) if total_plan > 0 else 0)
 
-            work_summary = disc_df.groupby('work_type_name').agg(
-                total_fact=('volume', 'sum'),
-                total_plan=('planned_volume', 'sum')
-            ).reset_index()
-            work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
+                message_lines.append("")
+                message_lines.append(f"*{get_data_translation(discipline, lang)}*")
+                
+                # ПРЕДЛОЖЕНИЕ: Для полной локализации эту строку лучше вынести в localization.py
+                work_summary = disc_df.groupby('work_type_name').agg(
+                    total_fact=('volume', 'sum'),
+                    total_plan=('planned_volume', 'sum')
+                ).reset_index()
 
-            for _, row in work_summary.iterrows():
-                message_lines.append(f"— _{get_data_translation(row['work_type_name'], lang)}_ — **{round(row['total_fact'], 1)}** / **{round(row['total_plan'], 1)}** (**{int(row['percent'])}%**)")
+                work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
 
-            message_lines.append("───────────────")
+                for _, row in work_summary.iterrows():
+                    work_type = get_data_translation(row['work_type_name'], lang)
+                    fact = round(row['total_fact'], 1)
+                    plan = round(row['total_plan'], 1)
+                    percent = int(row['percent'])
+                    message_lines.append(f"— _{work_type}_ — **{fact}** / **{plan}** (**{percent}%**)")
+
+                message_lines.append("───────────────")
 
         if not has_any_reports:
-            message_lines += ["", get_text('no_reports_today', lang), "───────────────"]
+            message_lines.append("")
+            message_lines.append("_Отчёты по всем дисциплинам на сегодня отсутствуют._")
+            message_lines.append("───────────────")
 
-        message_lines += ["", f"*{get_text('choose_discipline_for_chart', lang)}*"]
+        message_lines.append("")
+        message_lines.append("*Выберите дисциплину для просмотра графика:*")
 
         keyboard_buttons = [
             [InlineKeyboardButton(get_data_translation(name, lang), callback_data=f"gen_overview_chart_{name}")]
             for name in all_disciplines
         ]
-        keyboard_buttons.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="report_menu_all")])
 
+        keyboard_buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")])
+
+        # ВАЖНО: используем add_handler с pattern="^gen_overview_chart_" в main()!
         await query.edit_message_text(
             text="\n".join(message_lines),
             reply_markup=InlineKeyboardMarkup(keyboard_buttons),
@@ -1938,12 +1952,11 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         )
 
     except Exception as e:
-        logger.exception("Ошибка в show_overview_dashboard_menu")
+        logger.error(f"Ошибка в show_overview_dashboard_menu: {e}")
         try:
-            await query.edit_message_text(get_text('overview_error', lang), parse_mode="Markdown")
+            await query.edit_message_text("❗ *Произошла ошибка при формировании сводки.*\n_Пожалуйста, попробуйте позже._", parse_mode="Markdown")
         except:
             pass
-
 
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str) -> None:
     """Генерирует дашборд выработки для КОНКРЕТНОЙ дисциплины из PostgreSQL."""
