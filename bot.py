@@ -3887,15 +3887,13 @@ async def get_date_for_personnel_history(update: Update, context: ContextTypes.D
     return SELECTING_PERSONNEL_HISTORY_DATE
 
 async def process_custom_history_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает введенную дату и вызывает генератор отчета (НОВАЯ ВЕРСИЯ)."""
+    """Обрабатывает введенную дату и вызывает НОВЫЙ генератор отчета."""
     user_input = update.message.text.strip()
     user_id = str(update.effective_user.id)
     lang = get_user_language(user_id)
     
-    # Получаем дисциплину из контекста
-    discipline_filter = context.user_data.get('history_discipline_filter')
-
     try:
+        # Пытаемся распарсить дату или диапазон
         if ',' in user_input:
             start_str, end_str = [d.strip() for d in user_input.split(',')]
             start_date = datetime.strptime(start_str, "%d.%m.%Y").date()
@@ -3908,8 +3906,8 @@ async def process_custom_history_date(update: Update, context: ContextTypes.DEFA
         # Удаляем сообщение пользователя с датой
         await update.message.delete()
         
-        # Вызываем основной генератор отчета, передавая ему даты и дисциплину
-        await generate_detailed_roster_summary(update, context, start_date_override=start_date, end_date_override=end_date)
+        # --- ИСПРАВЛЕНИЕ: Вызываем нашу новую универсальную функцию ---
+        await show_personnel_report(update, context, start_date_override=start_date, end_date_override=end_date)
 
     except (ValueError, IndexError):
         await update.message.reply_text(get_text('report_error_invalid_date', lang), parse_mode="Markdown")
@@ -3917,20 +3915,6 @@ async def process_custom_history_date(update: Update, context: ContextTypes.DEFA
 
     context.user_data.clear()
     return ConversationHandler.END
-
-personnel_history_date_conv_handler = ConversationHandler(
-    entry_points=[CallbackQueryHandler(get_date_for_personnel_history, pattern="^ph_pd_")],
-    states={
-        SELECTING_PERSONNEL_HISTORY_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_custom_history_date)]
-    },
-    fallbacks=[
-        # При отмене возвращаемся в главное меню истории табелей
-        CallbackQueryHandler(show_personnel_history_menu, pattern="^personnel_history_menu$"),
-        CommandHandler('cancel', show_personnel_history_menu),
-        CommandHandler('start', start_over)
-    ],
-    per_user=True, allow_reentry=True
-)
 
 # --- Доп функции - Формирование отчета бригадира ---
 async def prompt_for_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -4445,9 +4429,9 @@ def main() -> None:
         SELECTING_PERSONNEL_HISTORY_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_custom_history_date)]
     },
     fallbacks=[
-        # При отмене возвращаемся в главное меню истории табелей, вызывая нашу новую функцию
-        CallbackQueryHandler(show_personnel_history_menu, pattern="^cancel_date_selection$"), # Можно добавить кнопку "Отмена" с таким callback
-        CommandHandler('cancel', show_personnel_history_menu),
+        # --- ИСПРАВЛЕНИЕ: При отмене возвращаемся в меню "Людские ресурсы" ---
+        CallbackQueryHandler(show_hr_menu, pattern="^hr_menu$"),
+        CommandHandler('cancel', show_hr_menu),
         CommandHandler('start', start_over)
     ],
     per_user=True, allow_reentry=True
