@@ -1874,6 +1874,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
     # Если у пользователя есть закрепленная дисциплина, сразу показываем его график
     if user_role.get('discipline') and not (user_role.get('isAdmin') or user_role.get('managerLevel') == 1):
+        # Вызов другой функции, не требующей изменений в рамках текущей задачи
         await generate_overview_chart(update, context, discipline_name=user_role.get('discipline'))
         return
 
@@ -1883,36 +1884,48 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
     except Exception as e:
         logger.warning(f"Не удалось удалить сообщение в show_overview_dashboard_menu: {e}")
 
-    wait_msg = await context.bot.send_message(query.message.chat_id, escape_markdown(f"⏳ {get_text('loading_please_wait', lang)}", version=2), parse_mode="MarkdownV2")
+    # Отправляем сообщение "Загружаю..." с правильным экранированием
+    wait_msg = await context.bot.send_message(
+        query.message.chat_id,
+        escape_markdown(f"⏳ {get_text('loading_please_wait', lang)}", version=2),
+        parse_mode="MarkdownV2"
+    )
 
     try:
         engine = create_engine(DATABASE_URL)
-        today_str = date.today().strftime('%Y-%m-%d')
+        # Используем datetime.now() для текущей даты, чтобы избежать проблем с таймзонами
+        today_str = datetime.now().strftime('%Y-%m-%d') 
 
+        # Убран фильтр r.kiok_approved = 1, чтобы видеть все поданные отчеты
         pd_query = """
             SELECT r.discipline_name, r.work_type_name, r.volume, r.people_count, wt.norm_per_unit
             FROM reports r
             JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
-            WHERE r.report_date = :today AND r.kiok_approved = 1
+            WHERE r.report_date = :today
         """
         with engine.connect() as connection:
             df = pd.read_sql_query(text(pd_query), connection, params={'today': today_str})
 
         all_disciplines_db = db_query("SELECT name FROM disciplines ORDER BY name")
         if not all_disciplines_db:
-            await wait_msg.edit_text(escape_markdown(f"⚠️ {get_text('overview_no_disciplines_error', lang)}", version=2), parse_mode="MarkdownV2")
+            await wait_msg.edit_text(
+                escape_markdown(f"⚠️ {get_text('overview_no_disciplines_error', lang)}", version=2),
+                parse_mode="MarkdownV2"
+            )
             return ConversationHandler.END
 
         all_disciplines = [name for name, in all_disciplines_db]
         
+        # Заголовок сводки, всегда экранируем
         message_lines = [f"📊 *{escape_markdown(get_text('overview_summary_title', lang), version=2)}*"]
         has_any_reports_today = False
         
         for discipline_name_from_db in all_disciplines:
             disc_df = df[df['discipline_name'] == discipline_name_from_db] if not df.empty else pd.DataFrame()
             
+            # Проверяем, есть ли отчеты для ТЕКУЩЕЙ дисциплины
             if not disc_df.empty:
-                has_any_reports_today = True
+                has_any_reports_today = True # Хотя бы одна дисциплина имеет отчеты
 
                 disc_df['planned_volume'] = pd.to_numeric(disc_df['people_count'], errors='coerce') * pd.to_numeric(disc_df['norm_per_unit'], errors='coerce')
                 disc_df['volume'] = pd.to_numeric(disc_df['volume'], errors='coerce')
@@ -1920,17 +1933,26 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                 total_people = int(disc_df['people_count'].sum())
                 total_plan = disc_df['planned_volume'].sum()
                 total_fact = disc_df['volume'].sum()
+                
+                # Избегаем деления на ноль для avg_performance
                 avg_performance = (total_fact / total_plan * 100) if total_plan > 0 else 0
                 avg_performance_rounded = round(avg_performance, 1)
 
                 translated_discipline_name = get_data_translation(discipline_name_from_db, lang)
-                # Убедимся, что все части строки экранированы
-                message_lines.append(f"\n✨ *{escape_markdown(translated_discipline_name, version=2)}* \\({escape_markdown(get_text('total_label', lang), version=2)}: {escape_markdown(str(total_people), version=2)} {escape_markdown(get_text('people_label', lang), version=2)} \\| {escape_markdown(get_text('avg_output_label', lang), version=2)}: {escape_markdown(f'{avg_performance_rounded:.1f}%', version=2)}\\)")
+                
+                # Строка для дисциплины: все динамические данные экранируются
+                message_lines.append(
+                    f"\n✨ *{escape_markdown(translated_discipline_name, version=2)}* "
+                    f"\\({escape_markdown(get_text('total_label', lang), version=2)}: {escape_markdown(str(total_people), version=2)} {escape_markdown(get_text('people_label', lang), version=2)} \\| "
+                    f"{escape_markdown(get_text('avg_output_label', lang), version=2)}: {escape_markdown(f'{avg_performance_rounded:.1f}\\%', version=2)}\\)" # Процент экранируется
+                )
 
                 work_summary = disc_df.groupby('work_type_name').agg(
                     total_fact=('volume', 'sum'),
                     total_plan=('planned_volume', 'sum')
                 ).reset_index()
+                # Фильтруем виды работ, где сумма факта и плана > 0, чтобы избежать деления на ноль при расчете процента
+                work_summary = work_summary[work_summary['total_fact'] + work_summary['total_plan'] > 0] 
                 work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
 
                 if not work_summary.empty:
@@ -1942,32 +1964,47 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                         plan = round(row['total_plan'], 1)
                         percent = round(row['percent'], 1)
 
-                        # Убедимся, что все части строки экранированы, особенно цифры и проценты
-                        message_lines.append(f"  ▪️ {escaped_work_type}: {escape_markdown(get_text('fact_short_label', lang), version=2)}: {escape_markdown(f'{fact:.1f}', version=2)} / {escape_markdown(get_text('plan_short_label', lang), version=2)}: {escape_markdown(f'{plan:.1f}', version=2)} / {escape_markdown(get_text('output_short_label', lang), version=2)}: {escape_markdown(f'{percent:.1f}%', version=2)}")
+                        # Строка для вида работ: все динамические данные экранируются
+                        message_lines.append(
+                            f"  ▪️ {escaped_work_type}: {escape_markdown(get_text('fact_short_label', lang), version=2)}: {escape_markdown(f'{fact:.1f}', version=2)} / "
+                            f"{escape_markdown(get_text('plan_short_label', lang), version=2)}: {escape_markdown(f'{plan:.1f}', version=2)} / "
+                            f"{escape_markdown(get_text('output_short_label', lang), version=2)}: {escape_markdown(f'{percent:.1f}\\%', version=2)}" # Процент экранируется
+                        )
+                else: # Если work_summary пусто после фильтрации (например, только нулевые объемы)
+                     message_lines.append(f"  _{escape_markdown(get_text('overview_no_detailed_data', lang), version=2)}_")
+
             else:
                 translated_discipline_name = get_data_translation(discipline_name_from_db, lang)
+                # Если отчетов нет по данной дисциплине: все части строки экранируются
                 message_lines.append(f"\n▪️ *{escape_markdown(translated_discipline_name, version=2)}*: {escape_markdown(get_text('overview_no_data_for_discipline', lang), version=2)}")
 
+        # Финальное сообщение, если вообще не было отчетов по ВСЕМ дисциплинам
         if not has_any_reports_today:
             message_lines.append(f"\n_{escape_markdown(get_text('overview_no_reports_overall', lang), version=2)}_")
 
+        # Запрос на выбор графика: экранируется
         message_lines.append(f"\n*{escape_markdown(get_text('overview_select_chart_prompt', lang), version=2)}*")
 
         keyboard_buttons = []
         for name in all_disciplines:
             keyboard_buttons.append([InlineKeyboardButton(get_data_translation(name, lang), callback_data=f"gen_overview_chart_{name}")])
         
+        # Кнопка "Назад": текст экранируется
         keyboard_buttons.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="report_menu_all")])
 
         await wait_msg.edit_text(
             text="\n".join(message_lines),
             reply_markup=InlineKeyboardMarkup(keyboard_buttons),
-            parse_mode="MarkdownV2"
+            parse_mode="MarkdownV2" # Обязательно указываем MarkdownV2
         )
 
     except Exception as e:
         logger.error(f"Ошибка в show_overview_dashboard_menu: {e}")
-        await wait_msg.edit_text(f"❌ {escape_markdown(get_text('error_generic', lang), version=2)}", parse_mode="MarkdownV2")
+        # Сообщение об ошибке: экранируется
+        await wait_msg.edit_text(
+            f"❌ {escape_markdown(get_text('error_generic', lang), version=2)}",
+            parse_mode="MarkdownV2"
+        )
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str) -> None:
     """Генерирует дашборд выработки для КОНКРЕТНОЙ дисциплины из PostgreSQL."""
     query = update.callback_query
