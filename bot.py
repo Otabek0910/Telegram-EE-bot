@@ -6,7 +6,6 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 from datetime import time
 
-from localization import get_text
 from localization import get_text, get_data_translation
 
 import pytz # Не забудь добавить этот импорт в начало файла
@@ -852,26 +851,28 @@ async def cancel_restore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return ConversationHandler.END
 
 # --- ЛОГИКА Формирования отчетов ---
+# Код для полной замены
+
 async def start_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Начинает диалог создания отчета (МНОГОЯЗЫЧНАЯ ВЕРСИЯ).
+    Начинает диалог создания отчета (ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ МНОГОЯЗЫЧНАЯ ВЕРСИЯ).
     """
     query = update.callback_query
     await query.answer()
 
     user_id = str(query.from_user.id)
     user_role = check_user_role(user_id)
+    # Определяем язык в самом начале, чтобы он был доступен везде в функции
     lang = get_user_language(user_id)
 
     # Если это админ/овнер, сначала спрашиваем дисциплину
     if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
         disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
         if not disciplines:
-            # Эту ошибку можно не переводить
             await query.edit_message_text("⚠️ В базе данных нет дисциплин, невозможно создать отчет.")
             return ConversationHandler.END
 
-        # Названия дисциплин (name) берутся из БД и не переводятся
+        # Теперь переменная lang здесь определена, и get_data_translation сработает
         keyboard = [[InlineKeyboardButton(get_data_translation(name, lang), callback_data=f"owner_select_disc_{name}")] for name, in disciplines]
         keyboard.append([InlineKeyboardButton(get_text('cancel_button', lang), callback_data="cancel_report")])
         
@@ -1853,7 +1854,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
              dashboard_buttons.append([InlineKeyboardButton("🗓️ История табелей", callback_data="personnel_history_menu")])
         # === КОНЕЦ ИЗМЕНЕНИЯ ===
 
-        if user_role.get('isManager') or user_role.get('isAdmin') or user_role.get('isPto'):
+        if (user_role.get('isManager') and user_role.get('managerLevel') == 2) or user_role.get('isAdmin') or user_role.get('isPto'):
              dashboard_buttons.append([InlineKeyboardButton("🗑️ Удалить отчет", callback_data="delete_report_list_1")])
 
     dashboard_buttons.append([InlineKeyboardButton("🏠 В главное меню", callback_data="go_back_to_main_menu")])
@@ -3229,8 +3230,8 @@ async def show_work_types_page(update: Update, context: ContextTypes.DEFAULT_TYP
     keyboard_buttons = []
     # Названия видов работ (work_name) берутся из БД и не переводятся
     for work_id, work_name in works_on_page:
-        translated_name = get_data_translation(work_name, lang)
-        keyboard_buttons.append([InlineKeyboardButton(translated_name, callback_data=f"report_work_{work_id}")])
+     translated_name = get_data_translation(work_name, lang)
+     keyboard_buttons.append([InlineKeyboardButton(translated_name, callback_data=f"report_work_{work_id}")])
 
     navigation_buttons = []
     if page > 1:
@@ -3681,7 +3682,62 @@ async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Ошибка при формировании статуса персонала: {e}")
         await query.edit_message_text("❌ Произошла ошибка при сборе данных.")
 
-# Измененная функция: generate_discipline_personnel_report
+# Вставьте эту новую функцию в bot.py
+
+async def generate_personnel_detail_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Генерирует детальный отчет по статусу персонала для конкретной дисциплины на СЕГОДНЯ."""
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        parts = query.data.split('_')
+        discipline_name = parts[2]
+        page = int(parts[3])
+    except (IndexError, ValueError):
+        await query.edit_message_text("Ошибка: не удалось обработать запрос.")
+        return
+
+    await query.edit_message_text(f"⏳ Собираю детальную сводку по персоналу «{discipline_name}»...")
+
+    today_str = date.today().strftime('%Y-%m-%d')
+    user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
+
+    # Запрос для получения бригад и их общего заявленного состава на сегодня
+    query_text = """
+        SELECT
+            b.brigade_name,
+            dr.total_people
+        FROM daily_rosters dr
+        JOIN brigades b ON dr.brigade_user_id = b.user_id
+        JOIN disciplines d ON b.discipline = d.id
+        WHERE dr.roster_date = %s AND d.name = %s
+    """
+    brigades_rosters = db_query(query_text, (today_str, discipline_name))
+
+    if not brigades_rosters:
+        await query.edit_message_text(
+            f"На сегодня по дисциплине «{discipline_name}» табели не поданы.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(get_text('back_button', lang), callback_data="personnel_status")]])
+        )
+        return
+
+    message_lines = [f"👥 *Детализация по персоналу: «{discipline_name}»*\n_{date.today().strftime('%d.%m.%Y')}_\n"]
+
+    for brigade_name, total_declared in brigades_rosters:
+        # Для каждой бригады считаем, сколько людей уже занято в отчетах
+        assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name, today_str))
+        total_assigned = assigned_info[0][0] or 0 if assigned_info else 0
+        reserve = total_declared - total_assigned
+        
+        message_lines.append(f"\n*{brigade_name}*")
+        message_lines.append(f"  ▪️ {get_text('total_declared', lang).format(total=total_declared)}")
+        message_lines.append(f"  ▪️ {get_text('assigned_in_reports', lang).format(assigned=total_assigned)}")
+        message_lines.append(f"  ▪️ {get_text('free_in_reserve', lang).format(reserve=reserve)}")
+
+    keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="personnel_status")]]
+    await query.edit_message_text("\n".join(message_lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
 # Код для замены
 async def generate_discipline_personnel_report(update: Update, context: ContextTypes.DEFAULT_TYPE,
                                                 discipline_name: str = None, start_date: str = None, end_date: str = None,
@@ -4490,7 +4546,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(back_to_main_menu, pattern="^go_back_to_main_menu$"))
     application.add_handler(CallbackQueryHandler(back_to_main_menu, pattern="^main_menu_from_profile$"))
     application.add_handler(CallbackQueryHandler(show_personnel_status, pattern="^personnel_status$"))
-    application.add_handler(CallbackQueryHandler(generate_discipline_personnel_report, pattern="^personnel_detail_"))
+    application.add_handler(CallbackQueryHandler(generate_personnel_detail_report, pattern="^personnel_detail_"))
     application.add_handler(CallbackQueryHandler(list_reports_for_deletion, pattern="^delete_report_list_"))
     application.add_handler(CallbackQueryHandler(confirm_delete_report, pattern="^confirm_delete_"))
     application.add_handler(CallbackQueryHandler(execute_delete_report, pattern="^execute_delete_"))
