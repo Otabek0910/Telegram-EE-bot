@@ -1966,9 +1966,9 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     lang = get_user_language(user_id)
     
     await query.edit_message_text(
-        f"⏳ {escape_markdown(get_text('generating_dashboard_for', lang).format(discipline=get_data_translation(discipline_name, lang)), version=2)}",
-        parse_mode='MarkdownV2'
-    )
+    f"⏳ {escape_markdown(get_text('generating_dashboard_for', lang), version=2)}",
+    parse_mode='MarkdownV2'
+)
     
     try:
         engine = create_engine(DATABASE_URL)
@@ -1984,7 +1984,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         if reports_df.empty:
             keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] 
             await query.edit_message_text(
-                text=f"⚠️ *{escape_markdown(get_text('no_data_for_dashboard', lang).format(discipline=get_data_translation(discipline_name, lang)), version=2)}*",
+                text=f"⚠️ *Нет данных по дисциплине {escape_markdown(get_data_translation(discipline_name, lang), version=2)} для формирования дашборда.*",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='MarkdownV2'
             )
@@ -2003,7 +2003,8 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         if chart_df.empty:
             keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] 
             await query.edit_message_text(
-                text=f"ℹ️ *{escape_markdown(get_text('no_chart_data_excluding_other', lang).format(discipline=get_data_translation(discipline_name, lang)), version=2)}*",
+                text=f"ℹ️ *Нет данных для графика по дисциплине {escape_markdown(get_data_translation(discipline_name, lang), version=2)} (без учета \"Прочих\" работ).*",
+
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode='MarkdownV2'
             )
@@ -2024,7 +2025,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         
         ax.set_yticks(range(len(new_labels)))
         ax.set_yticklabels(new_labels)
-        ax.set_title(get_text('work_output_chart_title', lang).format(discipline=get_data_translation(discipline_name, lang)), fontsize=16, pad=20, weight='bold')
+        ax.set_title(f"Выработка по дисциплине {get_data_translation(discipline_name, lang)}", fontsize=16, pad=20, weight='bold')
         ax.set_xlabel(get_text('total_volume_label', lang), fontsize=12)
         ax.set_ylabel('')
         ax.legend(title=get_text('legend_label', lang))
@@ -2039,7 +2040,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
 
         min_date = reports_df['report_date'].min().strftime('%d.%m')
         max_date = reports_df['report_date'].max().strftime('%d.%m.%Y')
-        caption_text = f"*{escape_markdown(get_text('dashboard_caption_title', lang).format(discipline=get_data_translation(discipline_name, lang)), version=2)}*\n_{escape_markdown(get_text('data_period', lang).format(min_date=min_date, max_date=max_date), version=2)}_"
+        caption_text = f"*Дашборд по дисциплине {escape_markdown(get_data_translation(discipline_name, lang), version=2)}*\n_Данные за период: {escape_markdown(min_date, version=2)} — {escape_markdown(max_date, version=2)}_"
 
         keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]] 
 
