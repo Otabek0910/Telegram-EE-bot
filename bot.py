@@ -5,6 +5,10 @@ import logging
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 from datetime import time
+
+from localization import get_text
+from localization import get_text, get_data_translation
+
 import pytz # Не забудь добавить этот импорт в начало файла
 import os 
 import math
@@ -433,12 +437,14 @@ async def remove_message_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.warning(f"Не удалось удалить сообщение {message_id} по расписанию: {e}")
 
+# Код для полной замены
+
 async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str, chat_id: int, message_id_to_edit: int = None, greeting: str = None):
     """
-    Основная логика для отображения главного меню.
-    Показывает для бригадира максимально понятную сводку по его табелю.
+    Основная логика для отображения главного меню (МНОГОЯЗЫЧНАЯ ВЕРСИЯ).
     """
     user_role = check_user_role(user_id)
+    lang = get_user_language(user_id) # <--- Узнаем язык пользователя
     
     keyboard_buttons = []
     roster_summary_text = "" 
@@ -450,7 +456,6 @@ async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str,
         if roster_info:
             roster_id, total_declared = roster_info[0]
             
-            # Получаем детализацию состава
             details_raw = db_query("""
                 SELECT pr.role_name, drd.people_count
                 FROM daily_roster_details drd
@@ -459,56 +464,53 @@ async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str,
             """, (roster_id,))
             details_text = ", ".join([f"{name}: {count}" for name, count in details_raw]) if details_raw else "детали не найдены"
             
-            # Считаем задействованных людей
             brigade_name_for_query = user_role.get('brigadeName') or f"Бригада пользователя {user_id}"
             assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name_for_query, today_str))
             total_assigned = assigned_info[0][0] or 0 if assigned_info else 0
             
-            # Вычисляем остаток
             reserve = total_declared - total_assigned
             
-            # Формируем итоговый текст с разделителями
+            # Формируем итоговый текст с использованием get_text и .format()
             roster_summary_text = (
-                f"\n\n📋 *Табель на сегодня:*\n"
-                f"▪️ *Состав:* {details_text}\n"
-                f"▪️ *Всего заявлено:* {total_declared} чел.\n\n"
-                f"📊 *Статус выполнения:*\n"
-                f"▪️ Задействовано в отчетах: *{total_assigned}* чел.\n"
-                f"▪️ Свободно в резерве: *{reserve}* чел."
+                f"{get_text('roster_summary_today', lang)}\n"
+                f"{get_text('roster_composition', lang).format(details=details_text)}\n"
+                f"{get_text('total_declared', lang).format(total=total_declared)}\n"
+                f"{get_text('completion_status', lang)}\n"
+                f"{get_text('assigned_in_reports', lang).format(assigned=total_assigned)}\n"
+                f"{get_text('free_in_reserve', lang).format(reserve=reserve)}"
             )
 
-    # --- Логика отображения кнопок ---
-    # Кнопку "Подать табель" показываем, только если табель еще НЕ подан
+    # --- Логика отображения кнопок с использованием get_text ---
     if user_role['isForeman'] and not roster_summary_text:
-         keyboard_buttons.append([InlineKeyboardButton("📋 Подать табель на сегодня", callback_data="submit_roster")])
+        keyboard_buttons.append([InlineKeyboardButton(get_text('submit_roster_button', lang), callback_data="submit_roster")])
 
     if user_role['isForeman']:
-        keyboard_buttons.append([InlineKeyboardButton("📝 Формировать отчет", callback_data="new_report")])
+        keyboard_buttons.append([InlineKeyboardButton(get_text('form_report_button', lang), callback_data="new_report")])
 
     if any([user_role['isManager'], user_role['isPto'], user_role['isKiok'], user_role['isForeman']]):
-        keyboard_buttons.append([InlineKeyboardButton("📊 Посмотреть отчеты", callback_data="report_menu_all")])
+        keyboard_buttons.append([InlineKeyboardButton(get_text('view_reports_button', lang), callback_data="report_menu_all")])
     
     if any([user_role['isAdmin'], user_role['isManager'], user_role['isForeman'], user_role['isPto'], user_role['isKiok']]):
-        keyboard_buttons.append([InlineKeyboardButton("👤 Профиль", callback_data="show_profile")])
+        keyboard_buttons.append([InlineKeyboardButton(get_text('profile_button', lang), callback_data="show_profile")])
     else:
-        keyboard_buttons.append([InlineKeyboardButton("🔐 Авторизоваться", callback_data="start_auth")])
+        keyboard_buttons.append([InlineKeyboardButton(get_text('auth_button', lang), callback_data="start_auth")])
         
     if user_role['isAdmin']:
-        keyboard_buttons.append([InlineKeyboardButton("⚙️ Управление", callback_data="manage_menu")])
+        keyboard_buttons.append([InlineKeyboardButton(get_text('manage_button', lang), callback_data="manage_menu")])
 
     if REPORTS_GROUP_URL:
-         keyboard_buttons.append([InlineKeyboardButton("➡️ Перейти в группу отчетов", url=REPORTS_GROUP_URL)])
+         keyboard_buttons.append([InlineKeyboardButton(get_text('reports_group_button', lang), url=REPORTS_GROUP_URL)])
 
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
     
     # Собираем финальный текст сообщения
-    text = "🏠 *Главное меню*"
+    text = f"*{get_text('main_menu_title', lang)}*" # Сделаем заголовок жирным
     if greeting:
         text = f"{greeting}\n\n{text}"
     
-    text += roster_summary_text # Добавляем информацию о табеле
+    text += roster_summary_text
     
-    # Отправка или редактирование сообщения
+    # Отправка или редактирование сообщения (этот блок без изменений)
     try:
         if message_id_to_edit:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text=text, reply_markup=keyboard, parse_mode='Markdown')
@@ -852,26 +854,29 @@ async def cancel_restore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # --- ЛОГИКА Формирования отчетов ---
 async def start_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Начинает диалог создания отчета.
-    Для админа/овнера спрашивает дисциплину, для бригадира - сразу корпус.
+    Начинает диалог создания отчета (МНОГОЯЗЫЧНАЯ ВЕРСИЯ).
     """
     query = update.callback_query
     await query.answer()
 
-    user_role = check_user_role(str(query.from_user.id))
+    user_id = str(query.from_user.id)
+    user_role = check_user_role(user_id)
+    lang = get_user_language(user_id)
 
     # Если это админ/овнер, сначала спрашиваем дисциплину
     if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
         disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
         if not disciplines:
+            # Эту ошибку можно не переводить
             await query.edit_message_text("⚠️ В базе данных нет дисциплин, невозможно создать отчет.")
             return ConversationHandler.END
 
-        keyboard = [[InlineKeyboardButton(name, callback_data=f"owner_select_disc_{name}")] for name, in disciplines]
-        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_report")])
+        # Названия дисциплин (name) берутся из БД и не переводятся
+        keyboard = [[InlineKeyboardButton(get_data_translation(name, lang), callback_data=f"owner_select_disc_{name}")] for name, in disciplines]
+        keyboard.append([InlineKeyboardButton(get_text('cancel_button', lang), callback_data="cancel_report")])
         
         await query.edit_message_text(
-            text="📝 *Шаг 1: Для какой дисциплины создается отчет?*",
+            text=f"*{get_text('report_step1_discipline', lang)}*",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode="Markdown"
         )
@@ -884,48 +889,50 @@ async def start_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return GETTING_CORPUS
 
 async def show_corps_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int):
-    """Отображает указанную страницу корпусов."""
+    """Отображает указанную страницу корпусов (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     
     chat_id = update.effective_chat.id
     message_id_to_edit = update.callback_query.message.message_id if update.callback_query else None
+    user_id = str(update.effective_user.id)
+    lang = get_user_language(user_id)
 
     corps_list_raw = db_query("SELECT id, name FROM construction_objects ORDER BY display_order ASC, name ASC")
     
     if not corps_list_raw:
+        # Эту ошибку можно не переводить
         text = "⚠️ *Ошибка:* Не удалось найти ни одного корпуса в базе данных. Обратитесь к администратору."
         if message_id_to_edit:
             await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text=text, parse_mode='Markdown')
         else:
             await context.bot.send_message(chat_id, text, parse_mode='Markdown')
-        return ConversationHandler.END # Возможно, стоит подумать, как обработать этот ConversationHandler.END
+        return ConversationHandler.END
 
     total_corps = len(corps_list_raw)
     total_pages = math.ceil(total_corps / ELEMENTS_PER_PAGE) if total_corps > 0 else 1
 
-    # Вычисляем индексы для текущей страницы
     start_index = (page - 1) * ELEMENTS_PER_PAGE
     end_index = start_index + ELEMENTS_PER_PAGE
     corps_on_page = corps_list_raw[start_index:end_index]
 
     keyboard_buttons = []
+    # Названия корпусов (corps_name) берутся из БД и не переводятся
     for corps_id, corps_name in corps_on_page:
-        # callback_data теперь содержит только ID, как мы и исправляли ранее
         keyboard_buttons.append([InlineKeyboardButton(corps_name, callback_data=f"report_corp_{corps_id}")])
 
     # Кнопки навигации по страницам
     navigation_buttons = []
     if page > 1:
-        navigation_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"paginate_corps_{page - 1}"))
+        navigation_buttons.append(InlineKeyboardButton(get_text('back_button', lang), callback_data=f"paginate_corps_{page - 1}"))
     if page < total_pages:
-        navigation_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"paginate_corps_{page + 1}"))
+        navigation_buttons.append(InlineKeyboardButton(get_text('forward_button', lang), callback_data=f"paginate_corps_{page + 1}"))
     if navigation_buttons:
         keyboard_buttons.append(navigation_buttons)
 
     # Кнопки отмены/возврата в конец
-    keyboard_buttons.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_report")])
+    keyboard_buttons.append([InlineKeyboardButton(get_text('cancel_button', lang), callback_data="cancel_report")])
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
 
-    text = f"📝 *Шаг 1: Выберите корпус* (Страница {page} из {total_pages})"
+    text = f"*{get_text('report_step1_corpus', lang)}* ({get_text('page_of', lang).format(page=page, total_pages=total_pages)})"
     
     if message_id_to_edit:
         await context.bot.edit_message_text(
@@ -944,20 +951,23 @@ async def show_corps_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         )
 
 async def cancel_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отменяет процесс создания отчета и СРАЗУ возвращает в главное меню."""
+    """Отменяет процесс создания отчета и возвращает в главное меню (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
+    user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
+    
     # Показываем короткое всплывающее уведомление об отмене
-    await query.answer("❌ Создание отчета отменено")
+    await query.answer(get_text('report_creation_cancelled', lang))
     
     # Сразу же редактируем текущее сообщение, превращая его в главное меню
     await show_main_menu_logic(
         context=context,
-        user_id=str(query.from_user.id),
+        user_id=user_id,
         chat_id=query.message.chat_id,
         message_id_to_edit=query.message.message_id
     )
     
-    context.user_data.clear() # Очищаем временные данные
+    context.user_data.clear()
     return ConversationHandler.END
 
 async def go_back_in_report_creation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1039,37 +1049,53 @@ async def owner_select_discipline_and_ask_corpus(update: Update, context: Contex
 # --- ЛОГИКА РЕГИСТРАЦИИ ---
 
 async def start_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начало процесса авторизации. Спрашивает роль."""
+    """Начало процесса авторизации. Спрашивает роль (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
+    
+    # На этом этапе язык пользователя еще не известен, используем язык по умолчанию
+    lang = 'ru' 
+    
     keyboard = [
-        [InlineKeyboardButton("Руководитель", callback_data="auth_manager")],
-        [InlineKeyboardButton("Бригадир", callback_data="auth_foreman")],
-        [InlineKeyboardButton("ПТО", callback_data="auth_pto")],
-        [InlineKeyboardButton("КИОК", callback_data="auth_kiok")],
-        [InlineKeyboardButton("Отмена", callback_data="cancel_auth")],
+        [InlineKeyboardButton(get_text('auth_role_manager', lang), callback_data="auth_manager")],
+        [InlineKeyboardButton(get_text('auth_role_foreman', lang), callback_data="auth_foreman")],
+        [InlineKeyboardButton(get_text('auth_role_pto', lang), callback_data="auth_pto")],
+        [InlineKeyboardButton(get_text('auth_role_kiok', lang), callback_data="auth_kiok")],
+        [InlineKeyboardButton(get_text('cancel_button', lang), callback_data="cancel_auth")],
     ]
     await query.edit_message_text(
-        text="🔐 *Выберите вашу будущую роль:*",
+        text=f"*{get_text('auth_prompt_role', lang)}*",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
     return SELECTING_ROLE
 
 async def select_role(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получает роль и запрашивает ФИО."""
+    """Получает роль и запрашивает ФИО (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
+
+    # Язык по-прежнему по умолчанию, т.к. пользователь еще не в системе
+    lang = 'ru'
+
     role = query.data.split('_')[1]
     context.user_data['role'] = role
-    sent_message = await query.edit_message_text(text="📝 *Введите ваше имя и фамилию через пробел* (например: Иван Иванов):", parse_mode='Markdown')
+    
+    # Используем get_text для получения текста запроса
+    prompt_text = get_text('auth_prompt_name', lang)
+    
+    sent_message = await query.edit_message_text(text=prompt_text, parse_mode='Markdown')
     context.user_data['last_bot_message_id'] = sent_message.message_id
+    
     return GETTING_NAME
 
+# Код для полной замены
+
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получает ФИО и запрашивает контакт."""
+    """Получает ФИО и запрашивает контакт (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     user_input = update.message.text
     chat_id = update.effective_chat.id
+    lang = 'ru' # Используем язык по умолчанию
 
     # 1. СРАЗУ УДАЛЯЕМ ПРЕДЫДУЩЕЕ СООБЩЕНИЕ БОТА ("Введите имя...")
     last_bot_message_id = context.user_data.pop('last_bot_message_id', None)
@@ -1084,14 +1110,12 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     # 3. ПРОВЕРКА И УЛУЧШЕННАЯ ОБРАБОТКА ОШИБКИ
     if ' ' not in user_input:
-        # Отправляем сообщение об ошибке И СРАЗУ ЖЕ новый запрос,
-        # чтобы пользователь не запутался.
-        error_text = "❗ *Ошибка: Введите и имя, и фамилию через пробел.*\n\n"
-        prompt_text = "📝 *Пожалуйста, повторите ввод:*"
+        # Используем get_text для сообщения об ошибке
+        error_text = get_text('auth_error_name', lang)
         
         sent_message = await context.bot.send_message(
             chat_id=chat_id, 
-            text=error_text + prompt_text, 
+            text=error_text, 
             parse_mode="Markdown"
         )
         # Сохраняем ID нового сообщения, чтобы удалить его на следующем шаге
@@ -1102,12 +1126,15 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['first_name'] = first_name
     context.user_data['last_name'] = last_name
     
-    contact_button = KeyboardButton(text="📞 Отправить мой контакт", request_contact=True)
+    # Используем get_text для кнопки и текста запроса
+    contact_button = KeyboardButton(text=get_text('auth_contact_button', lang), request_contact=True)
     reply_markup = ReplyKeyboardMarkup([[contact_button]], resize_keyboard=True, one_time_keyboard=True)
+    
+    prompt_text = get_text('auth_prompt_contact', lang)
     
     sent_message = await context.bot.send_message(
         chat_id=chat_id, 
-        text="📞 *Отлично! Теперь нажмите на кнопку ниже, чтобы отправить ваш контакт.*", 
+        text=f"*{prompt_text}*", 
         reply_markup=reply_markup, 
         parse_mode="Markdown"
     )
@@ -1154,21 +1181,24 @@ async def get_contact(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return ConversationHandler.END
    
 async def ask_manager_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ЗАДАЕТ ВОПРОС про уровень руководителя."""
+    """ЗАДАЕТ ВОПРОС про уровень руководителя (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     chat_id = update.effective_chat.id
-    text = "⚙️ *Последний шаг: выберите ваш уровень руководства:*"
+    lang = 'ru' # Язык по умолчанию для регистрации
+
+    text = f"*{get_text('auth_prompt_manager_level', lang)}*"
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Уровень 1 (полный доступ)", callback_data="level_1")],
-        [InlineKeyboardButton("Уровень 2 (по дисциплине)", callback_data="level_2")],
+        [InlineKeyboardButton(get_text('auth_manager_level1', lang), callback_data="level_1")],
+        [InlineKeyboardButton(get_text('auth_manager_level2', lang), callback_data="level_2")],
     ])
     sent_message = await context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode='Markdown')
     context.user_data['last_bot_message_id'] = sent_message.message_id
-    return SELECTING_MANAGER_LEVEL # Остаемся на этом же шаге, ожидая ответа
+    return SELECTING_MANAGER_LEVEL
 
 async def handle_manager_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ОБРАБАТЫВАЕТ ВЫБОР уровня и отправляет запрос (для Ур. 1) или переходит дальше."""
+    """ОБРАБАТЫВАЕТ ВЫБОР уровня и отправляет запрос (для Ур. 1) или переходит дальше (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
+    lang = 'ru' # Язык по умолчанию для регистрации
     
     user_id_str = str(query.from_user.id)
     level = int(query.data.split('_')[1])
@@ -1179,70 +1209,66 @@ async def handle_manager_level(update: Update, context: ContextTypes.DEFAULT_TYP
     if level == 2:
         return await ask_discipline(update, context, from_manager=True)
 
-    # Логика для Уровня 1: отправка сообщения ожидания и запроса админу
-    text_message = await context.bot.send_message(
-    chat_id=user_id_str,
-    text="✅ *Данные приняты.*\n\n*Ваш запрос отправлен на подтверждение. Ожидайте...*",
-    parse_mode='Markdown'
-    )
-    emoji_message = await context.bot.send_message(
-    chat_id=user_id_str,
-    text="⏳"
-    )
-
+    # Используем get_text для сообщения пользователю
+    pending_text = get_text('auth_pending_approval', lang)
+    text_message = await context.bot.send_message(chat_id=user_id_str, text=pending_text, parse_mode='Markdown')
+    emoji_message = await context.bot.send_message(chat_id=user_id_str, text="⏳")
     user_info['pending_message_ids'] = [text_message.message_id, emoji_message.message_id]
     context.bot_data[user_id_str] = user_info
 
-    username = user_info.get('username', 'не указан')
-    # Экранируем спецсимволы в юзернейме
-    escaped_username = escape_markdown(username, version=2)
-
+    # Текст запроса для админа остается на русском
     request_text = (
-    f"🔐 *Запрос на регистрацию*\n\n"
-    f"▪️ *Роль:* Руководитель (Уровень 1)\n"
-    f"▪️ *Имя:* {user_info.get('first_name')} {user_info.get('last_name')}\n"
-    f"▪️ *Username:* @{escaped_username}\n"
-    f"▪️ *Телефон:* {user_info.get('phone_number')}\n"
-    f"▪️ *UserID:* `{user_id_str}`"
+        f"🔐 *Запрос на регистрацию*\n\n"
+        f"▪️ *Роль:* Руководитель (Уровень 1)\n"
+        f"▪️ *Имя:* {user_info.get('first_name')} {user_info.get('last_name')}\n"
+        f"▪️ *Username:* @{user_info.get('username', 'не указан')}\n"
+        f"▪️ *Телефон:* {user_info.get('phone_number')}\n"
+        f"▪️ *UserID:* `{user_id_str}`"
     )
-    
+    # Используем нашу новую функцию для отправки запроса
     await send_approval_request(
-        context=context,
-        user_id_str=user_id_str,
-        request_text=request_text,
-        approve_callback=f"approve_manager_{user_id_str}",
-        reject_callback=f"reject_manager_{user_id_str}"
+        context,
+        user_id_str,
+        request_text,
+        f"approve_manager_{user_id_str}",
+        f"reject_manager_{user_id_str}"
     )
     
     return ConversationHandler.END
 
 async def ask_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE, from_manager: bool = False) -> int:
-    """ЗАДАЕТ ВОПРОС про дисциплину, используя кнопки с ID."""
+    """ЗАДАЕТ ВОПРОС про дисциплину, используя кнопки с ID (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     chat_id = update.effective_chat.id if update.effective_chat else update.callback_query.message.chat_id
+    lang = 'ru' # Язык по умолчанию для регистрации
     
     user_info = context.bot_data.get(str(chat_id), {})
     role = user_info.get('role')
 
-    role_rus_map = {'foreman': 'Бригадир', 'pto': 'ПТО', 'kiok': 'КИОК'}
+    # Используем ключи из словаря для ролей, чтобы в будущем их тоже можно было перевести
+    role_rus_map = {
+        'foreman': get_text('auth_role_foreman', lang), 
+        'pto': get_text('auth_role_pto', lang), 
+        'kiok': get_text('auth_role_kiok', lang)
+    }
     role_rus = role_rus_map.get(role, role.upper() if role else 'НЕИЗВЕСТНО')
     
-    text = f"⚙️ *Последний шаг: выберите вашу дисциплину для роли «{role_rus}»:*"
     if from_manager:
-        text = "⚙️ *...и вашу дисциплину для Уровня 2:*"
+        text = f"*{get_text('auth_prompt_discipline_manager', lang)}*"
+    else:
+        text = f"*{get_text('auth_prompt_discipline', lang).format(role=role_rus)}*"
         
-    # Получаем ID и Имена дисциплин из БД
-    disciplines_from_db = db_query("SELECT id, name FROM disciplines")
+    disciplines_from_db = db_query("SELECT id, name FROM disciplines ORDER BY name")
     
     if not disciplines_from_db:
+        # Эту ошибку можно не переводить, она для администратора
         await context.bot.send_message(chat_id, "⚠️ *Ошибка:* В базе данных не найдено ни одной дисциплины. Обратитесь к администратору.")
         return ConversationHandler.END
 
-    # Создаем кнопки, где callback_data содержит ID
+    # ВАЖНО: Названия дисциплин (d_name) берутся из БД и не переводятся этой системой.
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton(name, callback_data=f"disc_{disc_id}")] for disc_id, name in disciplines_from_db
+        [InlineKeyboardButton(d_name, callback_data=f"disc_{disc_id}")] for disc_id, d_name in disciplines_from_db
     ])
     
-    # Если мы редактируем сообщение (например, при возврате назад), используем edit. Если нет - send.
     if update.callback_query and update.callback_query.message:
          sent_message = await update.callback_query.edit_message_text(text=text, reply_markup=keyboard, parse_mode='Markdown')
     else:
@@ -1252,59 +1278,50 @@ async def ask_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE, fro
     return SELECTING_DISCIPLINE
 
 async def handle_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ОБРАБАТЫВАЕТ ВЫБОР дисциплины и сохраняет ID дисциплины в профиль пользователя."""
+    """ОБРАБАТЫВАЕТ ВЫБОР дисциплины и отправляет запрос админу (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
-    # Удаляем сообщение с выбором дисциплин
     await query.delete_message()
-
+    
+    lang = 'ru' # Язык по умолчанию для регистрации
     user_id_str = str(query.from_user.id)
-
-    # 1. Получаем ID выбранной дисциплины из callback_data
     discipline_id = int(query.data.split('_')[1])
     
-    # 2. Обновляем данные пользователя, записывая ID
     user_info = context.bot_data.get(user_id_str, {})
-    user_info['discipline'] = discipline_id # Сохраняем ID, а не название
+    user_info['discipline'] = discipline_id
     role = user_info.get('role')
     context.bot_data[user_id_str] = user_info
 
-    # 3. Отправляем сообщение об ожидании подтверждения
-    text_message = await context.bot.send_message(
-        chat_id=user_id_str,
-        text="✅ *Данные приняты.*\n\n*Ваш запрос отправлен на подтверждение. Ожидайте...*",
-        parse_mode='Markdown'
-    )
+    # Используем get_text для сообщения пользователю
+    pending_text = get_text('auth_pending_approval', lang)
+    text_message = await context.bot.send_message(chat_id=user_id_str, text=pending_text, parse_mode='Markdown')
     emoji_message = await context.bot.send_message(chat_id=user_id_str, text="⏳")
     user_info['pending_message_ids'] = [text_message.message_id, emoji_message.message_id]
     context.bot_data[user_id_str] = user_info
     
-    # 4. Формируем запрос админу (здесь для красоты мы найдем название по ID)
     discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
     discipline_name_for_text = discipline_name_raw[0][0] if discipline_name_raw else "ID: " + str(discipline_id)
 
     role_rus_map = {'manager': 'Руководителя (Ур. 2)', 'foreman': 'Бригадира', 'pto': 'ПТО', 'kiok': 'КИОК'}
     role_rus = role_rus_map.get(role, 'Неизвестно')
 
-    username = user_info.get('username', 'не указан')
-    # Экранируем спецсимволы в юзернейме
-    escaped_username = escape_markdown(username, version=2)
-
+    # Текст запроса для админа остается на русском
     request_text = (
         f"🔐 *Запрос на регистрацию*\n\n"
         f"▪️ *Роль:* {role_rus}\n"
         f"▪️ *Дисциплина:* {discipline_name_for_text}\n"
         f"▪️ *Имя:* {user_info.get('first_name')} {user_info.get('last_name')}\n"
-        f"▪️ *Username:* @{escaped_username}\n"
+        f"▪️ *Username:* @{user_info.get('username', 'не указан')}\n"
         f"▪️ *Телефон:* {user_info.get('phone_number')}\n"
         f"▪️ *UserID:* `{user_id_str}`"
     )
+    # Используем нашу новую функцию для отправки запроса
     await send_approval_request(
-        context=context,
-        user_id_str=user_id_str,
-        request_text=request_text,
-        approve_callback=f"approve_{role}_{user_id_str}",
-        reject_callback=f"reject_{role}_{user_id_str}"
+        context,
+        user_id_str,
+        request_text,
+        f"approve_{role}_{user_id_str}",
+        f"reject_{role}_{user_id_str}"
     )
 
     return ConversationHandler.END
@@ -1327,13 +1344,15 @@ async def cancel_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return ConversationHandler.END
 
 async def start_roster_submission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начинает диалог подачи табеля, показывая нумерованный список."""
+    """Начинает диалог подачи табеля (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
 
     user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
     user_role = check_user_role(user_id)
     discipline_name = user_role.get('discipline')
+
     discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
     if not discipline_id_raw:
         await query.edit_message_text("⚠️ Ошибка: не удалось определить вашу дисциплину.")
@@ -1344,178 +1363,144 @@ async def start_roster_submission(update: Update, context: ContextTypes.DEFAULT_
     existing_roster = db_query("SELECT id FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
     if existing_roster:
         await query.edit_message_text(
-            "⚠️ Вы уже подавали табель на сегодня.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ В главное меню", callback_data="go_back_to_main_menu")]])
+            get_text('roster_already_submitted', lang),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(get_text('back_to_main_menu_button', lang), callback_data="go_back_to_main_menu")]])
         )
         return ConversationHandler.END
 
     roles_raw = db_query("SELECT role_name FROM personnel_roles WHERE discipline_id = %s ORDER BY role_name", (discipline_id,))
-    
     if not roles_raw:
         await query.edit_message_text("⚠️ Для вашей дисциплины не настроены должности. Обратитесь к администратору.")
         return ConversationHandler.END
 
-    # <<< КЛЮЧЕВОЕ ИЗМЕНЕНИЕ ЗДЕСЬ >>>
-    # Создаем нумерованный список и сохраняем его порядок
     role_names_ordered = [role[0] for role in roles_raw]
     context.user_data['ordered_roles_for_roster'] = role_names_ordered
-
-    # Формируем текст сообщения с нумерацией
     roles_text_list = [f"  *{i+1}. {name}*" for i, name in enumerate(role_names_ordered)]
     
-    message_text = (
-        f"📋 *Подача табеля на {date.today().strftime('%d.%m.%Y')}*\n\n"
-        f"Введите количество человек для каждой должности **через запятую**, строго в указанном порядке.\n"
-        f"Например, если у вас 5 сварщиков и 10 монтажников, введите: `5, 10`\n\n"
-        f"**Ваш порядок:**\n" +
-        "\n".join(roles_text_list)
+    message_text = get_text('roster_prompt', lang).format(
+        date=date.today().strftime('%d.%m.%Y'),
+        roles_list="\n".join(roles_text_list)
     )
 
     await query.edit_message_text(text=message_text, parse_mode="Markdown")
     context.user_data['last_bot_message_id'] = query.message.message_id
     
     return AWAITING_ROLES_COUNT
-    
-    return AWAITING_ROLES_COUNT
 
 async def get_role_counts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обрабатывает введенные числа через запятую."""
+    """Обрабатывает введенные числа через запятую (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     user_input = update.message.text
-    user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
+    user_id = str(update.effective_user.id)
+    lang = get_user_language(user_id)
 
-     # Удаляем сообщение пользователя с числами
     await update.message.delete()
-    # Удаляем предыдущее сообщение бота с вопросом
     last_bot_message_id = context.user_data.pop('last_bot_message_id', None)
     if last_bot_message_id:
         try:
             await context.bot.delete_message(chat_id=chat_id, message_id=last_bot_message_id)
-        except Exception as e:
-            logger.warning(f"Не удалось удалить сообщение {last_bot_message_id}: {e}")
-    # <<< КОНЕЦ НОВОГО БЛОКА УДАЛЕНИЯ >>>
+        except Exception: pass
     
-    # Получаем упорядоченный список должностей из контекста
     ordered_roles = context.user_data.get('ordered_roles_for_roster', [])
     
     try:
-        # Разделяем введенные числа по запятой
         counts_str = [s.strip() for s in user_input.split(',')]
+        if not all(s.isdigit() for s in counts_str):
+             raise ValueError("Contains non-digits")
         counts_int = [int(s) for s in counts_str]
 
-        # Проверяем, совпадает ли количество введенных чисел с количеством должностей
         if len(counts_int) != len(ordered_roles):
             await update.message.reply_text(
-                f"❌ *Ошибка!* Вы ввели {len(counts_int)} чисел, а ожидалось {len(ordered_roles)}. Пожалуйста, введите количество для каждой должности из списка."
+                get_text('roster_error_mismatch', lang).format(input_count=len(counts_int), expected_count=len(ordered_roles)),
+                parse_mode="Markdown"
             )
             return AWAITING_ROLES_COUNT
 
-        # Сопоставляем роли и количество
         parsed_roles = {role: count for role, count in zip(ordered_roles, counts_int) if count > 0}
         total_people = sum(parsed_roles.values())
         
-        if not parsed_roles:
-            await update.message.reply_text("❌ *Ошибка!* Вы не указали ни одного человека. Введите корректные данные.")
+        if not parsed_roles or total_people == 0:
+            await update.message.reply_text(get_text('roster_error_no_people', lang), parse_mode="Markdown")
             return AWAITING_ROLES_COUNT
 
-        # Сохраняем данные для подтверждения
-        context.user_data['roster_summary'] = {
-            'details': parsed_roles,
-            'total': total_people
-        }
+        context.user_data['roster_summary'] = { 'details': parsed_roles, 'total': total_people }
 
-        summary_text = ["*Проверьте данные:*\n"]
-        for role, count in parsed_roles.items():
-            summary_text.append(f"▪️ {role}: {count} чел.")
-        summary_text.append(f"\n*Итого: {total_people} чел.*")
+        summary_text_details = "\n".join([f"▪️ {role}: {count} чел." for role, count in parsed_roles.items()])
+        summary_text = get_text('roster_confirm_prompt', lang).format(summary=summary_text_details, total=total_people)
 
         keyboard = [
-            [InlineKeyboardButton("✅ Все верно, подтвердить", callback_data="confirm_roster")],
-            [InlineKeyboardButton("❌ Отмена", callback_data="cancel_roster")]
+            [InlineKeyboardButton(get_text('roster_confirm_and_save_button', lang), callback_data="confirm_roster")],
+            [InlineKeyboardButton(get_text('cancel_button', lang), callback_data="cancel_roster")]
         ]
-        await update.message.reply_text(
-            "\n".join(summary_text),
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text(summary_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        
         return CONFIRM_ROSTER
 
     except (ValueError, IndexError):
-        await update.message.reply_text(
-            "❌ *Ошибка формата!* Пожалуйста, введите только числа, разделенные запятой (например: `5, 10`)"
-        )
+        await update.message.reply_text(get_text('roster_error_invalid_format', lang), parse_mode="Markdown")
         return AWAITING_ROLES_COUNT
 
 async def save_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Проверяет данные табеля. Если все хорошо - сохраняет. 
-    Если новый табель меньше уже задействованных людей - просит подтверждение.
-    """
+    """Проверяет данные табеля и решает, как сохранять (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
-
+    
     user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
     user_role = check_user_role(user_id)
     roster_summary = context.user_data.get('roster_summary')
 
     if not roster_summary:
-        await query.edit_message_text("Произошла ошибка, данные не найдены. Попробуйте снова.")
+        await query.edit_message_text(get_text('data_not_found_error', lang))
         return ConversationHandler.END
 
     today_str = date.today().strftime('%Y-%m-%d')
     total_people_new = roster_summary['total']
     
-    # Считаем, сколько людей УЖЕ задействовано в отчетах за сегодня
     brigade_name_for_query = user_role.get('brigadeName') or f"Бригада пользователя {user_id}"
     assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name_for_query, today_str))
     total_assigned = assigned_info[0][0] or 0 if assigned_info else 0
 
-    # СЦЕНАРИЙ 1: Новый табель больше или равен уже задействованным людям (безопасный)
     if total_people_new >= total_assigned:
         reserve = total_people_new - total_assigned
-        greeting_text = f"✅ *Табель на сегодня успешно принят!*\n\nВ вашем резерве осталось *{reserve}* чел."
-        # Просто выполняем сохранение
+        greeting_text = get_text('roster_saved_safely', lang).format(reserve=reserve)
         return await execute_final_roster_save(update, context, greeting=greeting_text)
 
-    # СЦЕНАРИЙ 2: Новый табель меньше, чем уже задействовано (опасный)
     else:
-        warning_text = (
-            f"‼️ *ВНИМАНИЕ!* ‼️\n\n"
-            f"Вы пытаетесь заявить *{total_people_new}* чел., но в отчетах за сегодня уже задействовано *{total_assigned}* чел.\n\n"
-            f"При подтверждении **все ваши отчеты за сегодня будут УДАЛЕНЫ**, и вам придется распределять людей заново.\n\n"
-            f"Вы уверены, что хотите продолжить?"
-        )
+        warning_text = get_text('roster_dangerous_save_warning', lang).format(new_total=total_people_new, assigned=total_assigned)
         keyboard = [
-            [InlineKeyboardButton("✅ Да, удалить отчеты и сохранить", callback_data="force_save_roster")],
-            [InlineKeyboardButton("❌ Нет, отменить", callback_data="cancel_roster")]
+            [InlineKeyboardButton(get_text('roster_force_save_button', lang), callback_data="force_save_roster")],
+            [InlineKeyboardButton(get_text('cancel_button', lang), callback_data="cancel_roster")]
         ]
         await query.edit_message_text(warning_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        return CONFIRM_DANGEROUS_ROSTER_SAVE # Переходим в новое состояние ожидания
+        return CONFIRM_DANGEROUS_ROSTER_SAVE
 
 async def cancel_roster_submission(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отменяет диалог подачи табеля."""
+    """Отменяет диалог подачи табеля (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
-    await query.answer("Отменено")
-    await show_main_menu_logic(context, str(query.from_user.id), query.message.chat_id, query.message.message_id)
+    user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
+
+    await query.answer(get_text('action_cancelled', lang))
+    await show_main_menu_logic(context, user_id, query.message.chat_id, query.message.message_id)
     context.user_data.clear()
     return ConversationHandler.END
 
 # --- ОБРАБОТКА ПОДТВЕРЖДЕНИЯ/ОТКЛОНЕНИЯ ---
+# Код для полной замены
+
 async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает подтверждение, ПРОВЕРЯЯ ПРАВА НАЖАВШЕГО, и показывает меню."""
+    """Обрабатывает подтверждение/отклонение и отправляет уведомление пользователю на его языке."""
     query = update.callback_query
     
-    # <<< НАЧАЛО ПРОВЕРКИ ПРАВ АДМИНА >>>
     approver_id = str(query.from_user.id)
     approver_role = check_user_role(approver_id)
     
-    # Только админ или Овнер могут нажимать на эти кнопки
     if not approver_role.get('isAdmin'):
         await query.answer("⛔️ У вас нет прав для выполнения этого действия.", show_alert=True)
         return
-    # <<< КОНЕЦ ПРОВЕРКИ ПРАВ АДМИНА >>>
 
-    await query.answer() # Ответ для админа, что кнопка сработала
+    await query.answer()
     
     parts = query.data.split('_')
     action, role, user_id = parts[0], parts[1], parts[2]
@@ -1534,28 +1519,48 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             except Exception as e:
                 logger.info(f"Не удалось удалить сообщение ожидания: {e}")
 
-    role_rus_map = { 'manager': 'Руководитель', 'foreman': 'Бригадир', 'pto': 'ПТО', 'kiok': 'КИОК' }
-    role_rus = role_rus_map.get(role, role)
+    # --- НАЧАЛО ИЗМЕНЕНИЙ ---
+    # Определяем язык АДМИНА для ответа ему
+    admin_lang = get_user_language(approver_id)
+    
+    # Определяем название роли для сообщений
+    role_rus_map = {'manager': 'Руководитель', 'foreman': 'Бригадир', 'pto': 'ПТО', 'kiok': 'КИОК'}
+    role_text = role_rus_map.get(role, role)
 
     if action == 'approve':
         level = user_info_to_approve.get('level')
         discipline = user_info_to_approve.get('discipline')
         
+        # Сохраняем роль пользователя
         update_user_role(user_id, role, user_info_to_approve, discipline, level)
-        await query.edit_message_text(f"✅ *Роль «{role_rus}» для {user_info_to_approve.get('first_name')} подтверждена.*")
         
-        greeting_text = f"🎉 *Ваша роль «{role_rus}» подтверждена!*"
-        await show_main_menu_logic(context, user_id=user_id, chat_id=user_id, greeting=greeting_text)
+        # Редактируем сообщение для админа на его языке
+        admin_confirmation_text = get_text('auth_request_approved_admin', admin_lang).format(role=role_text, name=user_info_to_approve.get('first_name'))
+        await query.edit_message_text(f"*{admin_confirmation_text}*")
+        
+        # Теперь получаем язык ПОЛЬЗОВАТЕЛЯ и отправляем ему уведомление на его языке
+        user_lang = get_user_language(user_id)
+        greeting_text = get_text('auth_role_approved_user', user_lang).format(role=get_text(f'auth_role_{role}', user_lang))
+        
+        # Показываем пользователю его новое главное меню
+        await show_main_menu_logic(context, user_id=user_id, chat_id=int(user_id), greeting=greeting_text)
 
     elif action == 'reject':
-        await query.edit_message_text(f"❌ *Запрос для {user_info_to_approve.get('first_name')} отклонен.*")
-        keyboard = [[InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu_from_profile")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await context.bot.send_message(user_id, f"❌ *Ваш запрос на роль «{role_rus}» был отклонен.*", reply_markup=reply_markup, parse_mode='Markdown')
+        # Редактируем сообщение для админа на его языке
+        admin_confirmation_text = get_text('auth_request_rejected_admin', admin_lang).format(name=user_info_to_approve.get('first_name'))
+        await query.edit_message_text(f"*{admin_confirmation_text}*")
+        
+        # Отправляем уведомление пользователю (язык по умолчанию 'ru', т.к. он не был сохранен в БД)
+        lang = 'ru'
+        rejection_text = get_text('auth_request_rejected_user', lang).format(role=get_text(f'auth_role_{role}', lang))
+        keyboard = [[InlineKeyboardButton(get_text('main_menu_title', lang), callback_data="go_back_to_main_menu")]]
+        
+        await context.bot.send_message(user_id, f"*{rejection_text}*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
              
     if user_id in context.bot_data:
         del context.bot_data[user_id]
         logger.info(f"[APPROVE] Роль: {role}, Данные: {user_info_to_approve}")
+    # --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
 async def list_reports_for_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает постраничный список отчетов для возможного удаления."""
@@ -2298,55 +2303,60 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
         logger.error(f"Ошибка при генерации отчета 'Проблемные бригады': {e}")
         await query.edit_message_text("❌ Произошла ошибка при формировании детального отчета.")
 
+# Код для полной замены
+
 async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает пользователю информацию о его профиле и роли, включая телефон."""
+    """Показывает пользователю информацию о его профиле и роли (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
     
     user_id = str(query.from_user.id)
     user_role = check_user_role(user_id)
+    lang = get_user_language(user_id) # <-- Получаем язык пользователя
     
-    # Получаем номер телефона из user_role или пишем "не указан"
     phone_number_str = user_role.get('phoneNumber') or 'не указан'
     
+    # Собираем основной текст с помощью get_text
     profile_text = (
-        f"👤 *Ваш профиль:*\n\n"
-        f"▪️ *UserID:* `{user_id}`\n"
-        f"▪️ *Телефон:* `{phone_number_str}`\n"
-        f"▪️ *Username:* @{query.from_user.username or 'не указан'}\n\n"
+        f"*{get_text('profile_title', lang)}*\n\n"
+        f"{get_text('user_id_field', lang)} `{user_id}`\n"
+        f"{get_text('phone_field', lang)} `{phone_number_str}`\n"
+        f"{get_text('username_field', lang)} @{query.from_user.username or 'не указан'}\n\n"
     )
 
-    # --- Улучшенная логика отображения ролей ---
+    # Добавляем информацию о роли, используя переведенные строки
     if user_role['isAdmin']:
-        profile_text += "▪️ *Роль:* Руководитель 👑 (Админ)\n"
+        # Для Админа можно оставить пометку без перевода, она не видна пользователям с этой ролью
+        profile_text += f"{get_text('role_field', lang)} {get_text('auth_role_manager', lang)} 👑 (Админ)\n"
     elif user_role['isManager']:
         level = user_role.get('managerLevel', 'N/A')
-        discipline = user_role.get('discipline', 'Все')
+        discipline = user_role.get('discipline') or get_text('all_disciplines', lang)
         profile_text += (
-            f"▪️ *Роль:* Руководитель 💼\n"
-            f"▪️ *Уровень:* {level}\n"
-            f"▪️ *Дисциплина:* {discipline}\n"
+            f"{get_text('role_field', lang)} {get_text('auth_role_manager', lang)} 💼\n"
+            f"{get_text('level_field', lang)} {level}\n"
+            f"{get_text('discipline_field', lang)} {discipline}\n"
         )
     elif user_role['isForeman']:
         profile_text += (
-            f"▪️ *Роль:* Бригадир 👷\n"
-            f"▪️ *Бригада:* {user_role['brigadeName']}\n"
-            f"▪️ *Дисциплина:* {user_role['discipline']}\n"
+            f"{get_text('role_field', lang)} {get_text('auth_role_foreman', lang)} 👷\n"
+            f"{get_text('brigade_field', lang)} {user_role.get('brigadeName', '')}\n"
+            f"{get_text('discipline_field', lang)} {user_role.get('discipline', '')}\n"
         )
     elif user_role['isPto']:
         profile_text += (
-            f"▪️ *Роль:* ПТО 🛠️\n"
-            f"▪️ *Дисциплина:* {user_role['discipline']}\n"
+            f"{get_text('role_field', lang)} {get_text('auth_role_pto', lang)} 🛠️\n"
+            f"{get_text('discipline_field', lang)} {user_role.get('discipline', '')}\n"
         )
     elif user_role['isKiok']:
         profile_text += (
-            f"▪️ *Роль:* КИОК ✅\n"
-            f"▪️ *Дисциплина:* {user_role['discipline']}\n"
+            f"{get_text('role_field', lang)} {get_text('auth_role_kiok', lang)} ✅\n"
+            f"{get_text('discipline_field', lang)} {user_role.get('discipline', '')}\n"
         )
     else:
-        profile_text = "❌ *Не удалось определить вашу роль. Попробуйте авторизоваться снова.*"
+        profile_text = get_text('error_unauthorized', lang)
         
-    keyboard = [[InlineKeyboardButton("🏠 Главное меню", callback_data="go_back_to_main_menu")]]
+    # Переводим текст на кнопке
+    keyboard = [[InlineKeyboardButton(get_text('main_menu_title', lang), callback_data="go_back_to_main_menu")]]
     await query.edit_message_text(text=profile_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def manage_users_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3172,28 +3182,27 @@ async def get_corpus_and_ask_work_type(update: Update, context: ContextTypes.DEF
     # Переходим в состояние ожидания выбора вида работ
     return GETTING_WORK_TYPE
 
+# Код для полной замены
+
 async def show_work_types_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page: int = 1):
-    """Отображает страницу выбора вида работ с правильной логикой определения дисциплины."""
+    """Отображает страницу выбора вида работ (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     
     query = update.callback_query
     chat_id = query.message.chat_id
     message_id_to_edit = query.message.message_id
+    user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
 
-    # <<< НАЧАЛО ИСПРАВЛЕНИЯ: Правильная последовательность действий >>>
-    # Сначала пытаемся взять дисциплину из данных диалога (это сработает для Овнера)
     discipline_name = context.user_data.get('report_data', {}).get('discipline_name')
     
-    # И только если ее там нет, берем из профиля пользователя (это сработает для Бригадира)
     if not discipline_name:
-        user_role = check_user_role(str(query.from_user.id))
+        user_role = check_user_role(user_id)
         discipline_name = user_role.get('discipline')
-    # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
 
     if not discipline_name:
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text="⚠️ *Ошибка:* Не удалось определить вашу дисциплину. Обратитесь к администратору.", parse_mode='Markdown')
         return ConversationHandler.END
 
-    # ... (остальная часть функции остается без изменений) ...
     work_types_raw = db_query("""
      SELECT wt.id, wt.name FROM work_types wt
      JOIN disciplines d ON wt.discipline_id = d.id
@@ -3202,13 +3211,13 @@ async def show_work_types_page(update: Update, context: ContextTypes.DEFAULT_TYP
      """, (discipline_name,))
 
     if not work_types_raw:
-        text = f"⚠️ *Ошибка:* Не найдено ни одного вида работ для дисциплины «{discipline_name}»."
-        user_role_check = check_user_role(str(query.from_user.id))
-        if user_role_check.get('isAdmin') or user_role_check.get('managerLevel') == 1:
-            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="new_report")]]
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        else:
-            await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text=text, parse_mode='Markdown')
+        text = get_text('report_error_no_work_types', lang).format(discipline=discipline_name)
+        user_role_check = check_user_role(user_id)
+        # Кнопка "Назад" для админа и обычного пользователя ведет в разные места
+        back_callback = "new_report" if (user_role_check.get('isAdmin') or user_role_check.get('managerLevel') == 1) else "back_to_start_report"
+        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data=back_callback)]]
+        
+        await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return ConversationHandler.END
 
     total_works = len(work_types_raw)
@@ -3218,26 +3227,28 @@ async def show_work_types_page(update: Update, context: ContextTypes.DEFAULT_TYP
     works_on_page = work_types_raw[start_index:end_index]
 
     keyboard_buttons = []
+    # Названия видов работ (work_name) берутся из БД и не переводятся
     for work_id, work_name in works_on_page:
-        keyboard_buttons.append([InlineKeyboardButton(work_name, callback_data=f"report_work_{work_id}")])
+        translated_name = get_data_translation(work_name, lang)
+        keyboard_buttons.append([InlineKeyboardButton(translated_name, callback_data=f"report_work_{work_id}")])
 
     navigation_buttons = []
     if page > 1:
-        navigation_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"paginate_work_types_{page - 1}"))
+        navigation_buttons.append(InlineKeyboardButton(get_text('back_button', lang), callback_data=f"paginate_work_types_{page - 1}"))
     if page < total_pages:
-        navigation_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"paginate_work_types_{page + 1}"))
+        navigation_buttons.append(InlineKeyboardButton(get_text('forward_button', lang), callback_data=f"paginate_work_types_{page + 1}"))
     if navigation_buttons:
         keyboard_buttons.append(navigation_buttons)
     
-    # Кнопка "Назад" теперь ведет к выбору корпуса
-    # Для админа это будет шаг назад к выбору дисциплины
-    user_role_check = check_user_role(str(query.from_user.id))
+    user_role_check = check_user_role(user_id)
     back_button_callback = "new_report" if (user_role_check.get('isAdmin') or user_role_check.get('managerLevel') == 1) else "back_to_start_report"
-    keyboard_buttons.append([InlineKeyboardButton("◀️ Назад", callback_data=back_button_callback)])
-
+    keyboard_buttons.append([InlineKeyboardButton(get_text('back_button', lang), callback_data=back_button_callback)])
 
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
-    text = f"📝 *Шаг 2: Выберите вид работ для «{discipline_name}»* (Стр. {page} из {total_pages})"
+    
+    title_text = get_text('report_step2_work_type', lang).format(discipline=discipline_name)
+    page_info_text = get_text('page_of', lang).format(page=page, total_pages=total_pages)
+    text = f"*{title_text}* ({page_info_text})"
 
     await context.bot.edit_message_text(
         chat_id=chat_id,
@@ -3248,17 +3259,17 @@ async def show_work_types_page(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 async def get_work_type_and_ask_count(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получает вид работ и запрашивает количество человек."""
+    """Получает вид работ и запрашивает количество человек (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
+    user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
 
-    parts = query.data.split('_')
-    selected_work_type_id = parts[2] # Теперь здесь корректный индекс для ID
+    selected_work_type_id = query.data.split('_')[2]
    
-    # Получаем work_type_name И unit_of_measure из БД по ID
     work_type_info_raw = db_query("SELECT name, unit_of_measure FROM work_types WHERE id = %s", (selected_work_type_id,))
     if not work_type_info_raw:
-        await query.edit_message_text(text="⚠️ *Ошибка:* Выбранный вид работ не найден. Обратитесь к администратору.")
+        await query.edit_message_text(text="⚠️ *Ошибка:* Выбранный вид работ не найден.")
         return ConversationHandler.END
     
     selected_work_type_name, unit_of_measure = work_type_info_raw[0]
@@ -3266,10 +3277,9 @@ async def get_work_type_and_ask_count(update: Update, context: ContextTypes.DEFA
     context.user_data['report_data']['work_type'] = selected_work_type_name
     context.user_data['report_data']['unit_of_measure'] = unit_of_measure
     
-    # Редактируем сообщение, чтобы задать следующий вопрос
-    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="back_to_ask_work_type")]]
+    keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="back_to_ask_work_type")]]
     sent_message = await query.edit_message_text(
-        text="📝 *Шаг 3: Укажите количество человек на объекте*",
+        text=f"*{get_text('report_step3_people_count', lang)}*",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
@@ -3278,46 +3288,36 @@ async def get_work_type_and_ask_count(update: Update, context: ContextTypes.DEFA
     return GETTING_PEOPLE_COUNT
 
 async def get_people_count_and_ask_volume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Получает кол-во человек, ПРОВЕРЯЕТ ОСТАТОК, удаляет старые сообщения.
-    Если работа 'Прочая' - пропускает шаг объема и сразу спрашивает дату.
-    Иначе - запрашивает объем.
-    """
+    """Получает кол-во человек, ПРОВЕРЯЕТ ОСТАТОК и решает, куда идти дальше (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     chat_id = update.effective_chat.id
     user_id = str(update.effective_user.id)
+    lang = get_user_language(user_id)
     user_role = check_user_role(user_id)
     people_count_text = update.message.text
     
-    # Удаляем предыдущее сообщение бота ("введите кол-во")
     last_bot_message_id = context.user_data.pop('last_bot_message_id', None)
     if last_bot_message_id:
         try:
             await context.bot.delete_message(chat_id=chat_id, message_id=last_bot_message_id)
-        except Exception as e:
-            logger.warning(f"Не удалось удалить сообщение бота {last_bot_message_id}: {e}")
-    
-    # Удаляем сообщение пользователя с числом
+        except Exception: pass
     await update.message.delete()
 
-    # Проверяем, что введено корректное число
     try:
         people_count = int(people_count_text)
         if people_count <= 0:
-            raise ValueError("Количество человек должно быть положительным числом.")
+            raise ValueError()
     except ValueError:
-        error_text = "❗*Ошибка:* Пожалуйста, введите количество человек одним положительным числом (например: 5)."
+        error_text = get_text('report_error_invalid_number', lang)
         sent_message = await context.bot.send_message(chat_id, error_text, parse_mode="Markdown")
         context.user_data['last_bot_message_id'] = sent_message.message_id
         return GETTING_PEOPLE_COUNT
 
-    # Проверяем пул работников
     today_str = date.today().strftime('%Y-%m-%d')
     roster_info = db_query("SELECT total_people FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
     
     if not roster_info:
-        error_text = "⚠️ *Сначала нужно подать табель на сегодня!* \n\nВоспользуйтесь кнопкой в главном меню, чтобы заявить состав вашей бригады."
-        keyboard = [[InlineKeyboardButton("🏠 В главное меню", callback_data="go_back_to_main_menu")]]
-        await context.bot.send_message(chat_id, error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        keyboard = [[InlineKeyboardButton(get_text('main_menu_title', lang), callback_data="go_back_to_main_menu")]]
+        await context.bot.send_message(chat_id, get_text('report_error_no_roster', lang), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return ConversationHandler.END
 
     total_declared = roster_info[0][0]
@@ -3327,56 +3327,44 @@ async def get_people_count_and_ask_volume(update: Update, context: ContextTypes.
     available_pool = total_declared - total_assigned
     
     if people_count > available_pool:
-        error_text = f"❌ *Ошибка!* Вы пытаетесь задействовать *{people_count}* чел., но в резерве осталось только *{available_pool}*.\n\nВведите корректное число."
+        error_text = get_text('report_error_no_people', lang).format(count=people_count, reserve=available_pool)
         sent_message = await context.bot.send_message(chat_id, error_text, parse_mode="Markdown")
         context.user_data['last_bot_message_id'] = sent_message.message_id
         return GETTING_PEOPLE_COUNT
         
-    # Если все проверки пройдены, решаем, куда идти дальше
     context.user_data['report_data']['people_count'] = people_count
     
     work_type_name = context.user_data.get('report_data', {}).get('work_type', '')
     if 'Прочие' in work_type_name:
-        logger.info(f"Для работы '{work_type_name}' объем не требуется. Пропускаем шаг.")
-        context.user_data['report_data']['volume'] = 0.0 # Автоматически ставим объем 0
-        
-        # Сразу переходим к запросу даты
+        context.user_data['report_data']['volume'] = 0.0
         keyboard = [
-            [InlineKeyboardButton("Сегодня", callback_data="set_date_today"), InlineKeyboardButton("Вчера", callback_data="set_date_yesterday")],
-            [InlineKeyboardButton("❌ Отмена", callback_data="cancel_report")]
+            [InlineKeyboardButton(get_text('today_button', lang), callback_data="set_date_today"), InlineKeyboardButton(get_text('yesterday_button', lang), callback_data="set_date_yesterday")],
+            [InlineKeyboardButton(get_text('cancel_button', lang), callback_data="cancel_report")]
         ]
-        text = "📝 *Шаг 5: Укажите дату работ (или введите вручную ДД.ММ.ГГГГ)*"
         sent_message = await context.bot.send_message(
-            chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
+            chat_id, f"*{get_text('report_step5_date', lang)}*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
         )
         context.user_data['last_bot_message_id'] = sent_message.message_id
         return GETTING_DATE
         
-    else: # Если работа обычная, запрашиваем объем
+    else:
         unit_of_measure = context.user_data['report_data'].get('unit_of_measure', '') 
-        volume_prompt = "📝 *Шаг 4: Укажите выполненный объем*"
         if unit_of_measure:
-            volume_prompt += f" *в {unit_of_measure}*:" 
+            volume_prompt = get_text('report_step4_volume', lang).format(unit=unit_of_measure)
         else:
-            volume_prompt += ":" 
+            volume_prompt = get_text('report_step4_volume_no_unit', lang)
 
-        keyboard = [
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_ask_count")],
-            [InlineKeyboardButton("❌ Отмена", callback_data="cancel_report")]
-        ]
+        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="back_to_ask_count")], [InlineKeyboardButton(get_text('cancel_button', lang), callback_data="cancel_report")]]
         
-        sent_message = await context.bot.send_message(
-            chat_id, 
-            volume_prompt, 
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
-        )
+        sent_message = await context.bot.send_message(chat_id, f"*{volume_prompt}*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         context.user_data['last_bot_message_id'] = sent_message.message_id
         return GETTING_VOLUME
 
 async def get_volume_and_ask_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получает объем, удаляет старые сообщения, запрашивает дату."""
+    """Получает объем и запрашивает дату (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     chat_id = update.effective_chat.id
+    user_id = str(update.effective_user.id)
+    lang = get_user_language(user_id)
     volume_text = update.message.text.replace(',', '.')
     
     last_bot_message_id = context.user_data.pop('last_bot_message_id', None)
@@ -3389,49 +3377,34 @@ async def get_volume_and_ask_date(update: Update, context: ContextTypes.DEFAULT_
     try:
         volume = float(volume_text)
     except ValueError:
-        error_text = "❗*Ошибка:* Пожалуйста, введите выполненный объем одним числом (можно дробным)."
-        keyboard = [
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_ask_count")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_report")]
-]
-        sent_message = await context.bot.send_message(
-            chat_id, error_text, 
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
-        )
+        error_text = get_text('report_error_invalid_volume', lang)
+        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="back_to_ask_count")], [InlineKeyboardButton(get_text('cancel_button', lang), callback_data="cancel_report")]]
+        sent_message = await context.bot.send_message(chat_id, error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         context.user_data['last_bot_message_id'] = sent_message.message_id
         return GETTING_VOLUME
 
     context.user_data['report_data']['volume'] = volume
        
     keyboard = [
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_ask_volume")],
-        [
-            InlineKeyboardButton("Сегодня", callback_data="set_date_today"),
-            InlineKeyboardButton("Вчера", callback_data="set_date_yesterday")
-        ]
+        [InlineKeyboardButton(get_text('back_button', lang), callback_data="back_to_ask_volume")],
+        [InlineKeyboardButton(get_text('today_button', lang), callback_data="set_date_today"), InlineKeyboardButton(get_text('yesterday_button', lang), callback_data="set_date_yesterday")]
     ]
-    text = "📝 *Шаг 5: Выберите дату или введите ее вручную (01.07.2025)*"
-    sent_message = await context.bot.send_message(
-     chat_id, 
-     text, 
-     reply_markup=InlineKeyboardMarkup(keyboard), 
-     parse_mode="Markdown"
-    )
+    text = f"*{get_text('report_step5_date', lang)}*"
+    sent_message = await context.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     context.user_data['last_bot_message_id'] = sent_message.message_id
 
     return GETTING_DATE
 
 async def get_date_and_ask_notes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получает дату и предлагает добавить примечание."""
+    """Получает дату и предлагает добавить примечание (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     chat_id = update.effective_chat.id
+    user_id = str(update.effective_user.id)
+    lang = get_user_language(user_id)
     date_obj = None
     
-    # Эта часть определяет, откуда пришел запрос - с кнопки или из текстового сообщения
     if update.callback_query: 
         query = update.callback_query
         await query.answer()
-        # При нажатии кнопки "Сегодня" или "Вчера" мы удаляем предыдущее сообщение с вопросом
         await query.message.delete()
         
         if query.data == 'set_date_today':
@@ -3439,9 +3412,8 @@ async def get_date_and_ask_notes(update: Update, context: ContextTypes.DEFAULT_T
         elif query.data == 'set_date_yesterday':
             date_obj = date.today() - timedelta(days=1)
             
-    else: # Если пользователь ввел дату текстом
+    else: 
         date_text = update.message.text
-        # Удаляем предыдущее сообщение бота ("введите дату") и сообщение пользователя
         last_bot_message_id = context.user_data.pop('last_bot_message_id', None)
         if last_bot_message_id:
             try:
@@ -3450,83 +3422,63 @@ async def get_date_and_ask_notes(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.delete()
                       
         try:
-            # Пытаемся распознать дату
             date_obj = datetime.strptime(date_text, "%d.%m.%Y").date()
         except ValueError:
-            # Если формат неверный, снова просим ввести дату
-            error_text = "❗*Ошибка:* Неверный формат даты.\n\n📝 *Выберите дату кнопкой или введите ее вручную (ДД.ММ.ГГГГ)*"
+            error_text = get_text('report_error_invalid_date', lang)
             keyboard = [
-                [InlineKeyboardButton("◀️ Назад", callback_data="back_to_ask_volume")],
-                [InlineKeyboardButton("Сегодня", callback_data="set_date_today"), InlineKeyboardButton("Вчера", callback_data="set_date_yesterday")]
+                [InlineKeyboardButton(get_text('back_button', lang), callback_data="back_to_ask_volume")],
+                [InlineKeyboardButton(get_text('today_button', lang), callback_data="set_date_today"), InlineKeyboardButton(get_text('yesterday_button', lang), callback_data="set_date_yesterday")]
             ]
-            sent_message = await context.bot.send_message(
-                chat_id, error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
-            )
+            sent_message = await context.bot.send_message(chat_id, error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
             context.user_data['last_bot_message_id'] = sent_message.message_id
-            return GETTING_DATE # Остаемся в том же состоянии
+            return GETTING_DATE
 
-    # <<< ГЛАВНОЕ ИСПРАВЛЕНИЕ ЗДЕСЬ >>>
-    # Если дата успешно определена (date_obj не None), выполняем этот блок
     if date_obj:
-        # Сохраняем дату в двух форматах
         context.user_data['report_data']['report_date_db'] = date_obj.strftime("%Y-%m-%d")
         context.user_data['report_data']['report_date_display'] = date_obj.strftime("%d.%m.%Y")
 
-        # Формируем клавиатуру для следующего шага
         keyboard = [
-            [InlineKeyboardButton("✅ Да, добавить", callback_data="add_note")],
-            [InlineKeyboardButton("⏩ Пропустить", callback_data="skip_note")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="back_to_ask_date")]
+            [InlineKeyboardButton(get_text('report_add_note_button', lang), callback_data="add_note")],
+            [InlineKeyboardButton(get_text('skip_button', lang), callback_data="skip_note")],
+            [InlineKeyboardButton(get_text('back_button', lang), callback_data="back_to_ask_date")]
         ]
-        text = "📝 *Шаг 6: Хотите добавить примечание?*\n_(номер чертежа, оси, проблемы и т.д.)_"
-        
-        # Отправляем новое сообщение с вопросом о примечании
-        await context.bot.send_message(
-            chat_id, text, 
-            reply_markup=InlineKeyboardMarkup(keyboard), 
-            parse_mode="Markdown"
-        )
-        # И переходим в новое состояние GETTING_NOTES
+        text = f"*{get_text('report_step6_notes_prompt', lang)}*"
+        await context.bot.send_message(chat_id, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return GETTING_NOTES
     
-    # Этот return нужен на случай, если date_obj по какой-то причине остался None,
-    # чтобы диалог не завис безвозвратно.
     return GETTING_DATE
     
+# Код для полной замены
+
 async def submit_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Собирает все данные, сохраняет отчет, отправляет уведомление в группу и завершает диалог."""
+    """Собирает все данные, сохраняет отчет и отправляет уведомление (ПОЛНОСТЬЮ МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
+    user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
+
     await query.answer()
-    await query.edit_message_text("⏳ Сохраняю отчет и отправляю в группу...")
+    await query.edit_message_text(get_text('report_saving_and_sending', lang))
 
     report_data = context.user_data.get('report_data', {})
-    user_id = str(query.from_user.id)
     user_role = check_user_role(user_id)
- # <<< НАЧАЛО ИЗМЕНЕНИЯ >>>
-    # Определяем имя "бригадира" и дисциплину
+ 
     discipline_name = report_data.get('discipline_name')
     
-    # Если отчет создает админ/овнер, ставим специальное имя
     if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
         foreman_name = f"Администратор ({query.from_user.first_name})"
-    else: # Иначе берем имя бригадира из его профиля
+    else: 
         foreman_name = user_role.get('brigadeName')
 
     if not discipline_name:
-        await query.edit_message_text("❌ Ошибка: не удалось определить дисциплину для отчета.")
+        # ИСПРАВЛЕНИЕ 1: Используем get_text для ошибки
+        await query.edit_message_text(get_text('report_error_no_discipline', lang))
         return ConversationHandler.END
-    # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
-
-    discipline_name = user_role.get('discipline')
-    foreman_name = user_role.get('brigadeName')
 
     corpus_name = report_data.get('corps_name')
     work_type_name = report_data.get('work_type')
     people_count = report_data.get('people_count')
     volume = report_data.get('volume')
     report_date_db = report_data.get('report_date_db')
-    report_date_display = report_data.get('report_date_display')
-    unit_of_measure = report_data.get('unit_of_measure', '')
     notes = report_data.get('notes')
 
     report_id = db_query(
@@ -3538,8 +3490,9 @@ async def submit_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     )
 
     if not report_id:
-        await query.edit_message_text("❌ *Произошла ошибка при сохранении отчета в базу данных.*")
+        await query.edit_message_text(get_text('report_error_db_save', lang), parse_mode="Markdown")
         return ConversationHandler.END
+        
     logger.info(f"Создан отчет в БД с ID: {report_id}")
 
     mapping = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name ILIKE %s", (discipline_name,))
@@ -3547,6 +3500,11 @@ async def submit_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if mapping:
         chat_id, topic_id = mapping[0]
         
+        # Текст отчета, который уходит в общую группу, оставляем на русском для единообразия
+        report_date_display = datetime.strptime(report_date_db, "%Y-%m-%d").strftime("%d.%m.%Y")
+        unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (work_type_name,))
+        unit_of_measure = unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else ""
+
         report_lines = [
             f"📄 *Новый отчет от бригадира: {foreman_name}* (ID: {report_id})\n",
             f"▪️ *Корпус:* {corpus_name}",
@@ -3556,7 +3514,6 @@ async def submit_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             f"▪️ *Кол-во человек:* {people_count}",
             f"▪️ *Выполненный объем:* {volume} {unit_of_measure}"
         ]
-        # Добавляем примечание в отчет для группы, если оно есть
         if notes:
             report_lines.append(f"▪️ *Примечание:* {notes}")
         
@@ -3570,40 +3527,29 @@ async def submit_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         
         try:
             sent_message_in_group = await context.bot.send_message(
-                chat_id=chat_id,
-                text=report_text,
-                message_thread_id=topic_id,
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
+                chat_id=chat_id, text=report_text, message_thread_id=topic_id,
+                reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"
             )
-            
             db_query("UPDATE reports SET group_message_id = %s WHERE id = %s", (sent_message_in_group.message_id, report_id))
             
-            await query.answer("✅ Отчет успешно сохранен и отправлен!", show_alert=True)
+            await query.answer(get_text('report_saved_and_sent', lang), show_alert=True)
             await show_main_menu_logic(
               context=context,
-              user_id=str(query.from_user.id),
+              user_id=user_id,
               chat_id=query.message.chat_id,
               message_id_to_edit=query.message.message_id,
-              greeting="✅ Ваш отчет принят."
+              greeting=get_text('report_accepted_greeting', lang)
              )
 
         except Exception as e:
             logger.error(f"Не удалось отправить отчет в группу: {e}")
-            await query.edit_message_text(f"❌ *Произошла ошибка при отправке отчета в группу.*\n\nВозможно, у бота нет прав на отправку сообщений в тему. Обратитесь к администратору.")
+            # ИСПРАВЛЕНИЕ 2: Используем get_text для ошибки
+            await query.edit_message_text(get_text('report_error_group_send', lang), parse_mode="Markdown")
 
     else:
-        error_text = (
-            f"⚠️ *Отчет сохранен, но не может быть отправлен на согласование!*\n\n"
-            f"Причина: для дисциплины «*{discipline_name}*» не настроена тема в группе.\n\n"
-            f"Попросите администратора зайти в нужную тему и написать команду:\n`/link_topic {discipline_name}`"
-        )
-        keyboard = [[InlineKeyboardButton("🏠 В главное меню", callback_data="go_back_to_main_menu")]]
-        await query.edit_message_text(
-            error_text, 
-            reply_markup=InlineKeyboardMarkup(keyboard), 
-            parse_mode="Markdown"
-        )
+        error_text = get_text('report_saved_not_sent_error', lang).format(discipline=discipline_name)
+        keyboard = [[InlineKeyboardButton(get_text('main_menu_title', lang), callback_data="go_back_to_main_menu")]]
+        await query.edit_message_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
             
     context.user_data.clear()
     return ConversationHandler.END
@@ -4014,22 +3960,23 @@ async def process_custom_history_date(update: Update, context: ContextTypes.DEFA
 
 # --- Доп функции - Формирование отчета бригадира ---
 async def prompt_for_note(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Запрашивает у пользователя текст примечания и сохраняет ID сообщения."""
+    """Запрашивает у пользователя текст примечания (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
-    text = "✍️ Введите ваше примечание одним сообщением:"
-    # <<< ИЗМЕНЕНИЕ: Сохраняем отправленное сообщение >>>
+    user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
+    
+    text = get_text('report_note_prompt', lang)
     sent_message = await query.edit_message_text(text)
     context.user_data['last_bot_message_id'] = sent_message.message_id
     
     return GETTING_NOTES
 
 async def get_note_and_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Получает текст примечания, удаляет старые сообщения и переходит к подтверждению."""
+    """Получает текст примечания и переходит к подтверждению."""
     note_text = update.message.text
     context.user_data['report_data']['notes'] = note_text
     
-    # <<< ИЗМЕНЕНИЕ: Удаляем и сообщение пользователя, и предыдущее сообщение бота >>>
     last_bot_message_id = context.user_data.pop('last_bot_message_id', None)
     if last_bot_message_id:
         try:
@@ -4044,36 +3991,36 @@ async def skip_note_and_confirm(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     context.user_data['report_data']['notes'] = None
-    # Вызываем общую функцию для финального подтверждения
     return await confirm_report_logic(update, context)
 
 async def confirm_report_logic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Отображает финальный отчет для подтверждения пользователем."""
-    # <<< НАЧАЛО ИСПРАВЛЕНИЯ: Умное получение chat_id >>>
+    """Отображает финальный отчет для подтверждения (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     if update.callback_query:
         chat_id = update.callback_query.message.chat_id
+        user_id = str(update.callback_query.from_user.id)
     else:
         chat_id = update.effective_chat.id
-    # <<< КОНЕЦ ИСПРАВЛЕНИЯ >>>
-        
+        user_id = str(update.effective_user.id)
+    
+    lang = get_user_language(user_id)
     data = context.user_data['report_data']
     
     summary_lines = [
-        "📋 *Проверьте и подтвердите ваш отчет:*\n",
-        f"▪️ *Корпус:* {data.get('corps_name')}",
-        f"▪️ *Вид работ:* {data.get('work_type')}",
-        f"▪️ *Дата:* {data.get('report_date_display')}",
-        f"▪️ *Кол-во человек:* {data.get('people_count')}",
-        f"▪️ *Выполненный объем:* {data.get('volume')} {data.get('unit_of_measure', '')}"
+        f"*{get_text('report_final_confirmation_title', lang)}*",
+        f"{get_text('report_summary_corpus', lang)} {data.get('corps_name')}",
+        f"{get_text('report_summary_work_type', lang)} {data.get('work_type')}",
+        f"{get_text('report_summary_date', lang)} {data.get('report_date_display')}",
+        f"{get_text('report_summary_people', lang)} {data.get('people_count')}",
+        f"{get_text('report_summary_volume', lang)} {data.get('volume')} {data.get('unit_of_measure', '')}"
     ]
     
     if data.get('notes'):
-        summary_lines.append(f"▪️ *Примечание:* {data.get('notes')}")
+        summary_lines.append(f"{get_text('report_summary_notes', lang)} {data.get('notes')}")
 
     summary_text = "\n".join(summary_lines)
     keyboard = [
-        [InlineKeyboardButton("✅ Подтвердить и отправить", callback_data="submit_report")],
-        [InlineKeyboardButton("◀️ Назад (к дате)", callback_data="back_to_ask_date")]
+        [InlineKeyboardButton(get_text('report_confirm_and_send_button', lang), callback_data="submit_report")],
+        [InlineKeyboardButton(get_text('back_button', lang), callback_data="back_to_ask_date")]
     ]
     
     if update.callback_query:
@@ -4084,20 +4031,19 @@ async def confirm_report_logic(update: Update, context: ContextTypes.DEFAULT_TYP
     return CONFIRM_REPORT
 
 async def execute_dangerous_roster_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """УДАЛЯЕТ отчеты за день и затем сохраняет новый табель."""
+    """УДАЛЯЕТ отчеты за день и затем сохраняет новый табель (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
     
     user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
     user_role = check_user_role(user_id)
     today_str = date.today().strftime('%Y-%m-%d')
     brigade_name = user_role.get('brigadeName') or f"Бригада пользователя {user_id}"
 
-    # Удаляем отчеты
     db_query("DELETE FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name, today_str))
     
-    greeting_text = "✅ *Ваши отчеты за сегодня были удалены. Новый табель принят!*"
-    # Теперь вызываем общую функцию сохранения
+    greeting_text = get_text('roster_force_saved_success', lang)
     return await execute_final_roster_save(update, context, greeting=greeting_text)
 
 
@@ -4324,6 +4270,65 @@ async def handle_kiok_decision(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"НЕ УДАЛОСЬ ОТРЕДАКТИРОВАТЬ СООБЩЕНИЕ! Ошибка: {e}")
 
+# --- ЛОКАЛИЗАЦИЯ ЯЗЫКОВ ---
+
+def get_user_language(user_id: str) -> str:
+    """Получает код языка пользователя из любой таблицы ролей."""
+    # Убедимся, что user_id - это строка для запросов
+    user_id_str = str(user_id)
+    tables = ['admins', 'managers', 'brigades', 'pto', 'kiok']
+    for table in tables:
+        # Проверяем, существует ли таблица в БД
+        table_exists = db_query(f"SELECT to_regclass('public.{table}')")
+        if table_exists and table_exists[0][0]:
+            # Проверяем наличие колонки
+            col_check = db_query(f"SELECT 1 FROM information_schema.columns WHERE table_name='{table}' AND column_name='language_code' LIMIT 1")
+            if col_check:
+                lang_code_raw = db_query(f"SELECT language_code FROM {table} WHERE user_id = %s", (user_id_str,))
+                if lang_code_raw and lang_code_raw[0] and lang_code_raw[0][0]:
+                    return lang_code_raw[0][0]
+    return 'ru' # Язык по умолчанию, если пользователь не найден или нет записи о языке
+
+def update_user_language(user_id: str, lang_code: str):
+    """Обновляет язык пользователя во всех таблицах, где он есть."""
+    user_id_str = str(user_id)
+    tables = ['admins', 'managers', 'brigades', 'pto', 'kiok']
+    for table in tables:
+        # Проверяем наличие таблицы и колонки
+        table_exists = db_query(f"SELECT to_regclass('public.{table}')")
+        if table_exists and table_exists[0][0]:
+            col_check = db_query(f"SELECT 1 FROM information_schema.columns WHERE table_name='{table}' AND column_name='language_code' LIMIT 1")
+            if col_check:
+                # Обновляем, только если пользователь существует в этой таблице
+                db_query(f"UPDATE {table} SET language_code = %s WHERE user_id = %s", (lang_code, user_id_str))
+
+async def select_language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает инлайн-кнопки для выбора языка."""
+    keyboard = [
+        [InlineKeyboardButton("English 🇬🇧", callback_data="set_lang_en")],
+        [InlineKeyboardButton("Русский 🇷🇺", callback_data="set_lang_ru")],
+        [InlineKeyboardButton("O'zbekcha 🇺🇿", callback_data="set_lang_uz")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    # Используем get_text с языком по умолчанию, так как мы еще не знаем выбор пользователя
+    await update.message.reply_text(get_text('language_prompt', 'ru'), reply_markup=reply_markup)
+
+async def set_language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатие на кнопку выбора языка."""
+    query = update.callback_query
+    await query.answer()
+    
+    lang_code = query.data.split('_')[-1] # 'en', 'ru' или 'uz'
+    user_id = str(query.from_user.id)
+    
+    # Сохраняем язык в БД
+    update_user_language(user_id, lang_code)
+    
+    # Сообщаем об успехе и показываем главное меню на новом языке
+    # Сначала редактируем сообщение, а потом отдельным вызовом показываем меню
+    await query.edit_message_text(get_text('language_changed', lang_code))
+    await show_main_menu_logic(context, user_id, query.message.chat_id)
+
 # --- ГЛАВНАЯ ФУНКЦИЯ ---
 def main() -> None:
     """Главная функция запуска бота с корректной интеграцией планировщика."""
@@ -4498,7 +4503,10 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(personnel_history_select_period, pattern="^personnel_history_discipline_select_")) 
     # Обновленный паттерн для generate_discipline_personnel_report при вызове из истории
     application.add_handler(CallbackQueryHandler(generate_discipline_personnel_report, pattern="^ph_s_"))
-    # === КОНЕЦ ИЗМЕНЕНИЙ ===
+
+    application.add_handler(CommandHandler("language", select_language_menu))
+    application.add_handler(CallbackQueryHandler(set_language_callback, pattern="^set_lang_"))
+    
           
     # Запускаем бота
     logger.info("Бот запущен...")
