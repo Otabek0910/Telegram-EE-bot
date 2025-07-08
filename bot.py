@@ -4253,15 +4253,23 @@ async def handle_kiok_decision(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer("✅ Решение принято. Обновляю статус...")
     
     # Получаем регистрационное имя согласующего
-    approver_name = ""
-    role_tables_to_check = ['kiok', 'pto', 'managers', 'admins']
-    for table in role_tables_to_check:
-        user_data = db_query(f"SELECT first_name, last_name FROM {table} WHERE user_id = %s", (user_id,))
-        if user_data:
-            first_name, last_name = user_data[0]
-            approver_name = f"{first_name} {last_name}".strip()
-            break
-    if not approver_name:
+    approver_name_query = """
+        SELECT first_name, last_name FROM kiok WHERE user_id = %s
+        UNION ALL
+        SELECT first_name, last_name FROM pto WHERE user_id = %s
+        UNION ALL
+        SELECT first_name, last_name FROM managers WHERE user_id = %s
+        UNION ALL
+        SELECT first_name, last_name FROM admins WHERE user_id = %s
+        LIMIT 1;
+    """
+    params = (user_id, user_id, user_id, user_id)
+    user_data = db_query(approver_name_query, params)
+
+    if user_data and user_data[0]:
+        first_name, last_name = user_data[0]
+        approver_name = f"{first_name or ''} {last_name or ''}".strip()
+    else:
         approver_name = query.from_user.full_name
 
     # Обновляем статус в БД
@@ -4445,7 +4453,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview$"))
     application.add_handler(CallbackQueryHandler(lambda u, c: generate_overview_chart(u, c, discipline_name=u.callback_query.data.split('_')[-1]), pattern="^gen_overview_chart_"))
     #application.add_handler(CallbackQueryHandler(show_problem_brigades_menu, pattern="^report_underperforming$"))
-    application.add_handler(CallbackQueryHandler(handle_problem_brigades_button, pattern="^handle_problem_brigades$"))
+    application.add_handler(CallbackQueryHandler(handle_problem_brigades_button, pattern="^handle_problem_brigades_button$"))
     application.add_handler(CallbackQueryHandler(generate_problem_brigades_report, pattern="^gen_problem_report_"))
     application.add_handler(CallbackQueryHandler(show_foreman_performance, pattern="^foreman_performance$"))
     application.add_handler(CallbackQueryHandler(show_historical_report_menu, pattern="^report_historical$"))
