@@ -1921,14 +1921,19 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         has_any_reports_today = False
         
         for discipline_name_from_db in all_disciplines:
-            disc_df = df[df['discipline_name'] == discipline_name_from_db] if not df.empty else pd.DataFrame()
+            # Создаем копию DataFrame для каждой дисциплины, чтобы избежать SettingWithCopyWarning
+            disc_df = df[df['discipline_name'] == discipline_name_from_db].copy() if not df.empty else pd.DataFrame()
             
             # Проверяем, есть ли отчеты для ТЕКУЩЕЙ дисциплины
             if not disc_df.empty:
                 has_any_reports_today = True # Хотя бы одна дисциплина имеет отчеты
 
+                # Преобразуем столбцы к числовому типу, обрабатывая ошибки
                 disc_df['planned_volume'] = pd.to_numeric(disc_df['people_count'], errors='coerce') * pd.to_numeric(disc_df['norm_per_unit'], errors='coerce')
                 disc_df['volume'] = pd.to_numeric(disc_df['volume'], errors='coerce')
+
+                # Заменяем NaN на 0 после преобразования
+                disc_df.fillna(0, inplace=True)
 
                 total_people = int(disc_df['people_count'].sum())
                 total_plan = disc_df['planned_volume'].sum()
@@ -1953,6 +1958,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                 ).reset_index()
                 # Фильтруем виды работ, где сумма факта и плана > 0, чтобы избежать деления на ноль при расчете процента
                 work_summary = work_summary[work_summary['total_fact'] + work_summary['total_plan'] > 0] 
+                
+                # Защита от деления на ноль при расчете процента
                 work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
 
                 if not work_summary.empty:
@@ -1987,6 +1994,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
         keyboard_buttons = []
         for name in all_disciplines:
+            # Убеждаемся, что название дисциплины в кнопке переводится и корректно отображается
             keyboard_buttons.append([InlineKeyboardButton(get_data_translation(name, lang), callback_data=f"gen_overview_chart_{name}")])
         
         # Кнопка "Назад": текст экранируется
