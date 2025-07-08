@@ -105,11 +105,11 @@ def init_db():
         '''CREATE TABLE disciplines (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE)''',
         '''CREATE TABLE construction_objects (id SERIAL PRIMARY KEY, name TEXT NOT NULL UNIQUE, display_order INTEGER DEFAULT 0)''',
         '''CREATE TABLE work_types (id SERIAL PRIMARY KEY, name TEXT NOT NULL, discipline_id INTEGER NOT NULL REFERENCES disciplines(id), unit_of_measure TEXT, norm_per_unit REAL, display_order INTEGER DEFAULT 0)''',
-        '''CREATE TABLE admins (user_id VARCHAR(255) PRIMARY KEY, first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT)''',
-        '''CREATE TABLE managers (user_id VARCHAR(255) PRIMARY KEY, level INTEGER NOT NULL, discipline INTEGER REFERENCES disciplines(id), first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT)''',
-        '''CREATE TABLE brigades (user_id VARCHAR(255) PRIMARY KEY, brigade_name TEXT, discipline INTEGER REFERENCES disciplines(id), first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT)''',
-        '''CREATE TABLE pto (user_id VARCHAR(255) PRIMARY KEY, discipline INTEGER REFERENCES disciplines(id), first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT)''',
-        '''CREATE TABLE kiok (user_id VARCHAR(255) PRIMARY KEY, discipline INTEGER REFERENCES disciplines(id), first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT)''',
+        '''CREATE TABLE admins (user_id VARCHAR(255) PRIMARY KEY, first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT, language_code VARCHAR(2) DEFAULT 'ru')''',
+        '''CREATE TABLE managers (user_id VARCHAR(255) PRIMARY KEY, level INTEGER NOT NULL, discipline INTEGER REFERENCES disciplines(id), first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT, language_code VARCHAR(2) DEFAULT 'ru')''',
+        '''CREATE TABLE brigades (user_id VARCHAR(255) PRIMARY KEY, brigade_name TEXT, discipline INTEGER REFERENCES disciplines(id), first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT, language_code VARCHAR(2) DEFAULT 'ru')''',
+        '''CREATE TABLE pto (user_id VARCHAR(255) PRIMARY KEY, discipline INTEGER REFERENCES disciplines(id), first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT, language_code VARCHAR(2) DEFAULT 'ru')''',
+        '''CREATE TABLE kiok (user_id VARCHAR(255) PRIMARY KEY, discipline INTEGER REFERENCES disciplines(id), first_name TEXT, last_name TEXT, username TEXT, phone_number TEXT, language_code VARCHAR(2) DEFAULT 'ru')''',
         '''CREATE TABLE reports (id SERIAL PRIMARY KEY, timestamp TIMESTAMPTZ DEFAULT NOW(), corpus_name TEXT, discipline_name TEXT, work_type_name TEXT, foreman_name TEXT, people_count INTEGER, volume REAL, report_date DATE, notes TEXT, kiok_approved INTEGER DEFAULT 0, kiok_approver_id VARCHAR(255), kiok_approval_timestamp TIMESTAMPTZ, group_message_id BIGINT)''',
         '''CREATE TABLE topic_mappings (discipline_name TEXT PRIMARY KEY, chat_id BIGINT NOT NULL, topic_id INTEGER NOT NULL)''',
         '''CREATE TABLE personnel_roles (
@@ -4331,7 +4331,7 @@ async def set_language_callback(update: Update, context: ContextTypes.DEFAULT_TY
 # --- ГЛАВНАЯ ФУНКЦИЯ ---
 def main() -> None:
     """Главная функция запуска бота с корректной интеграцией планировщика."""
-    #init_db() # Раскомментируй для полной очистки и создания БД с нуля.
+    init_db() # Раскомментируй для полной очистки и создания БД с нуля.
     ensure_dirs_exist()
     
     # <<< НАЧАЛО ИЗМЕНЕНИЙ: Используем "хуки" жизненного цикла >>>
