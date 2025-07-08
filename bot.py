@@ -1833,7 +1833,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if user_role.get('isForeman'):
          dashboard_buttons.append([InlineKeyboardButton(get_text('foreman_performance_button', lang), callback_data="foreman_performance")])
     else:
-        dashboard_buttons.append([InlineKeyboardButton(get_text('report_overview_button', lang), callback_data="back_to_overview_dashboard")])
+        dashboard_buttons.append([InlineKeyboardButton(get_text('report_overview_button', lang), callback_data="report_overview")])
         if user_role.get('isManager') or user_role.get('isPto'):
           dashboard_buttons.append([InlineKeyboardButton(get_text('problem_brigades_button', lang), callback_data="handle_problem_brigades_button")])
         if user_role.get('isManager'):
@@ -4580,6 +4580,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(handle_kiok_decision, pattern="^kiok_"))
     application.add_handler(CallbackQueryHandler(show_profile, pattern="^show_profile$"))
     application.add_handler(CallbackQueryHandler(report_menu, pattern="^report_menu_"))
+    application.add_handler(CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview$"))
     application.add_handler(CallbackQueryHandler(show_overview_dashboard_menu, pattern="^back_to_overview_dashboard$"))
     application.add_handler(CallbackQueryHandler(report_menu, pattern="^report_menu_all$"))
 
