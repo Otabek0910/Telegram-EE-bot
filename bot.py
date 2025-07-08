@@ -3782,12 +3782,20 @@ async def show_personnel_report(update: Update, context: ContextTypes.DEFAULT_TY
     """
     query = update.callback_query
     
+    # Определяем user_id в зависимости от того, как вызвана функция
+    if query:
+        user_id = str(query.from_user.id)
+    else: 
+        user_id = str(update.effective_user.id)
+        
+    # СНАЧАЛА получаем язык
+    lang = get_user_language(user_id)
+
+    # И только ПОТОМ используем его
     if query:
         await query.answer()
-        user_id = str(query.from_user.id)
-        await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang=get_user_language(user_id))}")
-    else: # Вызвано из ConversationHandler
-        user_id = str(update.effective_user.id)
+        # Теперь передаем lang как позиционный аргумент, что тоже правильно
+        await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
 
     user_role = check_user_role(user_id)
     lang = get_user_language(user_id)
