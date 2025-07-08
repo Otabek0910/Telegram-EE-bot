@@ -59,6 +59,7 @@ BACKUP_RETENTION_DAYS = 7          # <<< СКОЛЬКО ДНЕЙ ХРАНИТЬ 
 REPORTS_GROUP_URL = "https://t.me/+OdHnUNt1WaZiMDY6" # <<< ДЛЯ ПУНКТА 4
 
 AWAITING_RESTORE_FILE = range(12, 13)
+AWAITING_DISCIPLINE_FOR_MANAGER = range(23, 24)
 
 # Настройка логирования
 logging.basicConfig(
@@ -499,20 +500,23 @@ async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str,
         sent_message = await context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode='Markdown')
         context.user_data['main_menu_message_id'] = sent_message.message_id
 
-async def force_user_to_main_menu(context: ContextTypes.DEFAULT_TYPE, user_id: str, greeting: str):
+async def force_user_to_main_menu(context: ContextTypes.DEFAULT_TYPE, user_id: str, greeting: str, message_to_delete_id: int = None):
     """
-    Принудительно отправляет пользователю новое главное меню, сбрасывая его состояние.
-    Эта функция не удаляет старые сообщения, а отправляет новое, чтобы пользователь точно его увидел.
+    Принудительно отправляет пользователю новое главное меню, удаляя старое сообщение, если нужно.
     """
     try:
-        # Очищаем все временные данные, чтобы прервать любой диалог для этого пользователя
-        # Это важно, так как user_data хранится в разрезе (chat_id, user_id)
-        # Мы предполагаем, что user_id и chat_id для личных сообщений совпадают.
+        # Очищаем временные данные диалога
         if (int(user_id), int(user_id)) in context.user_data:
             context.user_data[(int(user_id), int(user_id))].clear()
-            logger.info(f"Данные (user_data) для пользователя {user_id} были очищены.")
 
-        # Отправляем новое сообщение с пояснением
+        # Если передан ID старого сообщения (меню), удаляем его
+        if message_to_delete_id:
+            try:
+                await context.bot.delete_message(chat_id=user_id, message_id=message_to_delete_id)
+            except Exception:
+                pass # Игнорируем ошибку, если сообщение уже удалено
+
+        # Отправляем новое чистое меню
         await show_main_menu_logic(context, user_id, user_id, greeting=greeting)
         logger.info(f"Пользователю {user_id} было принудительно показано главное меню.")
     except Exception as e:
@@ -2185,7 +2189,9 @@ async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAU
     )
 
 async def generate_problem_brigades_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Генерирует детальный постраничный отчет по проблемным бригадам."""
+    """
+    Генерирует детальный постраничный отчет по проблемным бригадам для КОНКРЕТНОЙ дисциплины.
+    """
     query = update.callback_query
     await query.answer()
 
@@ -2196,63 +2202,73 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
     await query.edit_message_text(f"⏳ Формирую детальный отчет для «{discipline_name}»...")
 
     try:
-        # 1. Находим бригады, не сдавшие отчет сегодня
         today_str = date.today().strftime('%Y-%m-%d')
-        discipline_id = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))[0][0]
         
-        all_brigades = {row[0] for row in db_query("SELECT brigade_name FROM brigades WHERE discipline = %s", (discipline_id,))}
-        reported_today = {row[0] for row in db_query("SELECT DISTINCT foreman_name FROM reports WHERE discipline_name = %s AND report_date = %s", (discipline_name, today_str))}
-        non_reporters = [f"{name} (не сдал отчет)" for name in sorted(list(all_brigades - reported_today))]
+        # <<< НАЧАЛО ИСПРАВЛЕНИЯ 1: Фильтруем бригады по дисциплине >>>
+        # 1. Находим все бригады ТОЛЬКО этой дисциплины
+        discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
+        if not discipline_id_raw:
+            await query.edit_message_text(f"Ошибка: дисциплина «{discipline_name}» не найдена.")
+            return
+        discipline_id = discipline_id_raw[0][0]
+        
+        all_brigades_in_discipline = {row[0] for row in db_query("SELECT brigade_name FROM brigades WHERE discipline = %s", (discipline_id,))}
 
-        # 2. Находим бригады с низкой выработкой
-        # <<< НАЧАЛО ИЗМЕНЕНИЯ >>>
+        # 2. Находим тех, кто сдал отчет в ЭТОЙ дисциплине
+        reported_today = {row[0] for row in db_query(
+            "SELECT DISTINCT foreman_name FROM reports WHERE discipline_name = %s AND report_date = %s", 
+            (discipline_name, today_str)
+        )}
+        non_reporters = [f"{name} (не сдал отчет)" for name in sorted(list(all_brigades_in_discipline - reported_today))]
+        
+        # 3. Находим отстающих ТОЛЬКО в ЭТОЙ дисциплине
         engine = create_engine(DATABASE_URL)
         query_text = """
             SELECT r.foreman_name, r.people_count, r.volume, wt.norm_per_unit
-            FROM reports r JOIN disciplines d ON r.discipline_name = d.name
-            JOIN work_types wt ON d.id = wt.discipline_id AND r.work_type_name = wt.name
+            FROM reports r JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
             WHERE r.discipline_name = :discipline_name
         """
         with engine.connect() as connection:
             df = pd.read_sql_query(text(query_text), connection, params={'discipline_name': discipline_name})
-        # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
-        
+        # <<< КОНЕЦ ИСПРАВЛЕНИЯ 1 >>>
+
         low_performers = []
         if not df.empty:
-            df['output_percentage'] = (pd.to_numeric(df['volume']) / (pd.to_numeric(df['people_count']) * pd.to_numeric(df['norm_per_unit'])).replace(0, 1)) * 100
-            avg_performance = df.groupby('foreman_name')['output_percentage'].mean()
-            low_performers_series = avg_performance[avg_performance < 100]
-            low_performers = [f"{name} (ср. выработка {perc:.1f}%)" for name, perc in low_performers_series.sort_values().items()]
+            # Исключаем "Прочие работы" из анализа выработки
+            performance_df = df[~df['work_type_name'].str.contains('Прочие', case=False, na=False)]
+            if not performance_df.empty:
+                performance_df['output_percentage'] = (pd.to_numeric(performance_df['volume']) / (pd.to_numeric(performance_df['people_count']) * pd.to_numeric(performance_df['norm_per_unit'])).replace(0, 1)) * 100
+                avg_performance = performance_df.groupby('foreman_name')['output_percentage'].mean()
+                low_performers_series = avg_performance[avg_performance < 100]
+                low_performers = [f"{name} (ср. выработка {perc:.1f}%)" for name, perc in low_performers_series.sort_values().items()]
 
-        # 3. Объединяем списки и удаляем дубликаты имен
         problem_brigades_dict = {name.split(' ')[0]: full_text for full_text in non_reporters + low_performers for name in [full_text]}
         final_problem_list = sorted(list(problem_brigades_dict.values()))
 
-        # 4. Логика пагинации
+        # ... (Логика пагинации остается такой же) ...
         items_per_page = 10
         total_items = len(final_problem_list)
         if total_items == 0:
             message_text = f"✅ *По дисциплине «{discipline_name}» проблемных бригад не найдено!*"
-            keyboard = [[InlineKeyboardButton("◀️ К выбору дисциплин", callback_data="report_underperforming")]]
+            # <<< ИСПРАВЛЕНИЕ 2: Правильная кнопка "Назад" >>>
+            keyboard = [[InlineKeyboardButton("◀️ К выбору дисциплин", callback_data="handle_problem_brigades")]]
             await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
             return
 
         total_pages = math.ceil(total_items / items_per_page)
         start_index = (page - 1) * items_per_page
         end_index = start_index + items_per_page
-        
         items_on_page = final_problem_list[start_index:end_index]
-        
         message_text = f"⚠️ *Проблемные бригады: {discipline_name}* (Стр. {page}/{total_pages})\n\n" + "\n".join(f"- {item}" for item in items_on_page)
 
-        # 5. Кнопки пагинации
         nav_buttons = []
         if page > 1:
             nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"gen_problem_report_{discipline_name}_{page-1}"))
         if page < total_pages:
             nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"gen_problem_report_{discipline_name}_{page+1}"))
 
-        keyboard = [nav_buttons, [InlineKeyboardButton("◀️ К выбору дисциплин", callback_data="report_underperforming")]]
+        # <<< ИСПРАВЛЕНИЕ 3: Правильная кнопка "Назад" >>>
+        keyboard = [nav_buttons, [InlineKeyboardButton("◀️ К выбору дисциплин", callback_data="handle_problem_brigades")]]
         
         await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
@@ -2551,7 +2567,7 @@ async def set_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     new_discipline_name = discipline_name_raw[0][0] if discipline_name_raw else "Неизвестно"
 
     greeting_text = f"⚙️ Администратор изменил вашу дисциплину на «{new_discipline_name}». Пожалуйста, подайте табель заново, если уже делали это сегодня."
-    await force_user_to_main_menu(context, user_id_to_edit, greeting_text)
+    await force_user_to_main_menu(context, user_id_to_edit, greeting_text, query.message.message_id)
 
     await context.bot.send_message(
         chat_id=query.message.chat_id,
@@ -2868,11 +2884,9 @@ async def show_user_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     elif role == 'brigades':
         keyboard_buttons.append([InlineKeyboardButton("Изменить дисциплину", callback_data=f"change_discipline_{role}_{user_id_to_edit}")])
         
-        # <<< НАЧАЛО ПРОВЕРКИ ПРАВ ДЛЯ КНОПКИ >>>
-        # Показываем кнопку сброса, только если смотрящий - Админ, Рук. 2 ур. или ПТО
-        if viewer_role.get('isAdmin') or viewer_role.get('managerLevel') == 2 or viewer_role.get('isPto'):
-            keyboard_buttons.append([InlineKeyboardButton("🔄 Сбросить сегодняшний табель", callback_data=f"reset_roster_{user_id_to_edit}")])
-        # <<< КОНЕЦ ПРОВЕРКИ ПРАВ >>>
+    # Показываем кнопку сброса, если смотрящий - Админ, Рук. 2 ур. или ПТО
+    if viewer_role.get('isAdmin') or viewer_role.get('managerLevel') == 2 or viewer_role.get('isPto'):
+        keyboard_buttons.append([InlineKeyboardButton("🔄 Сбросить сегодняшний табель", callback_data=f"reset_roster_{user_id_to_edit}")])
 
     # Кнопка удаления доступна всем админам (кроме удаления самого себя или Овнера)
     if viewer_role.get('isAdmin') and viewer_id != user_id_to_edit and user_id_to_edit != OWNER_ID:
@@ -2917,31 +2931,6 @@ async def show_discipline_change_menu(update: Update, context: ContextTypes.DEFA
         parse_mode="Markdown"
     )
 
-async def set_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обновляет ID дисциплины для выбранного пользователя в базе данных."""
-    query = update.callback_query
-    await query.answer("Обновляю дисциплину...")
-
-    # 1. Парсим callback_data: set_discipline_{role}_{user_id}_{discipline_id}
-    parts = query.data.split('_')
-    role, user_id_to_edit, new_discipline_id = parts[2], parts[3], int(parts[4])
-    
-    # 2. Обновляем запись в нужной таблице, сохраняя ID
-    db_query(f"UPDATE {role} SET discipline = %s WHERE user_id = %s", (new_discipline_id, user_id_to_edit))
-    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (new_discipline_id,))
-    new_discipline_name = discipline_name_raw[0][0] if discipline_name_raw else "Неизвестно"
-
-    await context.bot.send_message(
-        chat_id=query.message.chat_id,
-        text=f"✅ Дисциплина для пользователя `{user_id_to_edit}` изменена на *{new_discipline_name}*.",
-        parse_mode="Markdown"
-    )
-    
-    await query.message.delete()
-    # 4. Автоматически возвращаемся к обновленному списку пользователей
-    query.data = f"list_users_{role}_1"
-    await list_users(update, context)
-
 async def show_level_change_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает меню для смены уровня руководителя."""
     query = update.callback_query
@@ -2965,34 +2954,44 @@ async def show_level_change_menu(update: Update, context: ContextTypes.DEFAULT_T
         parse_mode="Markdown"
     )
 
-async def set_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обновляет уровень доступа для руководителя и принудительно обновляет его меню."""
+async def set_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Начинает процесс смены уровня. Если выбран Ур. 2, переходит к выбору дисциплины."""
     query = update.callback_query
-    await query.answer("Обновляю уровень...")
+    await query.answer()
 
     parts = query.data.split('_')
     user_id_to_edit, new_level = parts[2], int(parts[3])
     
+    # Сохраняем во временные данные, чтобы передать на следующий шаг
+    context.user_data['edit_user_id'] = user_id_to_edit
+    context.user_data['new_level'] = new_level
+    
+    # Если админ ставит Уровень 1, то дисциплина не нужна, выполняем сразу
     if new_level == 1:
-        db_query("UPDATE managers SET level = %s, discipline = NULL WHERE user_id = %s", (new_level, user_id_to_edit))
-    else:
-        db_query("UPDATE managers SET level = %s WHERE user_id = %s", (new_level, user_id_to_edit))
-
-    # Отправляем пользователю уведомление и новое меню
-    greeting_text = f"⚙️ Администратор изменил ваш уровень руководства на «Уровень {new_level}»."
-    await force_user_to_main_menu(context, user_id_to_edit, greeting_text)
+        db_query("UPDATE managers SET level = 1, discipline = NULL WHERE user_id = %s", (user_id_to_edit,))
+        greeting_text = "⚙️ Администратор изменил ваш уровень руководства на «Уровень 1»."
+        await force_user_to_main_menu(context, user_id_to_edit, greeting_text, query.message.message_id)
+        
+        await query.edit_message_text(f"✅ Уровень для руководителя `{user_id_to_edit}` изменен на *Уровень 1*.")
+        # Завершаем диалог, если он был
+        return ConversationHandler.END
     
-    # Уведомляем админа об успехе
-    await context.bot.send_message(
-        chat_id=query.message.chat_id,
-        text=f"✅ Уровень для руководителя `{user_id_to_edit}` изменен на *Уровень {new_level}*.",
-        parse_mode="Markdown"
-    )
-    
-    # Возвращаем админа к списку
-    await query.message.delete()
-    query.data = "list_users_managers_1"
-    await list_users(update, context)
+    # Если админ ставит Уровень 2, просим выбрать дисциплину
+    elif new_level == 2:
+        disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
+        if not disciplines:
+            await query.edit_message_text("Ошибка: нет дисциплин для назначения.")
+            return ConversationHandler.END
+        
+        keyboard = [[InlineKeyboardButton(name, callback_data=f"set_new_disc_{disc_id}")] for disc_id, name in disciplines]
+        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_admin_action")])
+        
+        await query.edit_message_text(
+            f"Теперь выберите дисциплину для руководителя `{user_id_to_edit}` (Уровень 2):",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return AWAITING_DISCIPLINE_FOR_MANAGER
 
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Назначает нового администратора ответом на его сообщение."""
@@ -3048,7 +3047,7 @@ async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Отправляем пользователю уведомление и новое меню
     greeting_text = "⚠️ Ваша роль была удалена администратором. Для дальнейшей работы пройдите авторизацию заново."
-    await force_user_to_main_menu(context, user_id_to_delete, greeting_text)
+    await force_user_to_main_menu(context, user_id_to_delete, greeting_text, query.message.message_id)
     
     # Уведомляем админа об успехе
     await context.bot.send_message(
@@ -3061,6 +3060,37 @@ async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.message.delete()
     query.data = f"list_users_{role_to_delete}_1"
     await list_users(update, context)
+
+async def set_new_discipline_for_manager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Завершает смену уровня на 2, назначая дисциплину."""
+    query = update.callback_query
+    await query.answer()
+
+    new_discipline_id = int(query.data.split('_')[-1])
+    user_id_to_edit = context.user_data.get('edit_user_id')
+    
+    if not user_id_to_edit:
+        await query.edit_message_text("❌ Ошибка: сессия истекла. Попробуйте снова.")
+        return ConversationHandler.END
+
+    db_query("UPDATE managers SET level = 2, discipline = %s WHERE user_id = %s", (new_discipline_id, user_id_to_edit))
+    
+    greeting_text = "⚙️ Администратор присвоил вам Уровень 2 и назначил новую дисциплину."
+    await force_user_to_main_menu(context, user_id_to_edit, greeting_text, query.message.message_id)
+
+    await query.edit_message_text(f"✅ Руководителю `{user_id_to_edit}` присвоен *Уровень 2* и новая дисциплина.")
+    
+    context.user_data.clear()
+    return ConversationHandler.END
+
+async def cancel_admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Отменяет админское действие и возвращает в меню."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Действие отменено.")
+    await manage_users_menu(update, context) # Возвращаемся в меню управления пользователями
+    context.user_data.clear()
+    return ConversationHandler.END
 
 # --- Доп функции - Формирование отчета ---
 async def get_corpus_and_ask_work_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3579,7 +3609,7 @@ async def get_directories_template(update: Update, context: ContextTypes.DEFAULT
             os.remove(file_path)
 
 async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает сводку по персоналу на сегодня, с кнопками для детализации."""
+    """Показывает сводку по персоналу, группируя должности по дисциплинам."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("⏳ Собираю данные по персоналу...")
@@ -3587,57 +3617,49 @@ async def show_personnel_status(update: Update, context: ContextTypes.DEFAULT_TY
     today_str = date.today().strftime('%Y-%m-%d')
     
     try:
-        # Запрос для общей сводки по дисциплинам
-        summary_query = """
-            SELECT d.name, SUM(dr.total_people) as total
-            FROM daily_rosters dr
-            JOIN brigades b ON dr.brigade_user_id = b.user_id
-            JOIN disciplines d ON b.discipline = d.id
-            WHERE dr.roster_date = %s
-            GROUP BY d.name
-            ORDER BY d.name;
-        """
-        discipline_summary = db_query(summary_query, (today_str,))
-
-        # Запрос для общей сводки по должностям
-        roles_summary_query = """
-            SELECT pr.role_name, SUM(drd.people_count) as total
+        # Запрос, который сразу группирует все, что нам нужно
+        query_text = """
+            SELECT 
+                d.name as discipline_name, 
+                pr.role_name, 
+                SUM(drd.people_count) as total_by_role
             FROM daily_roster_details drd
             JOIN daily_rosters dr ON drd.roster_id = dr.id
             JOIN personnel_roles pr ON drd.role_id = pr.id
+            JOIN disciplines d ON pr.discipline_id = d.id
             WHERE dr.roster_date = %s
-            GROUP BY pr.role_name
-            ORDER BY pr.role_name;
+            GROUP BY d.name, pr.role_name
+            ORDER BY d.name, pr.role_name;
         """
-        roles_summary = db_query(roles_summary_query, (today_str,))
-        
-        # Формируем текст сообщения
+        full_summary = db_query(query_text, (today_str,))
+
         message_lines = [f"👥 *Сводка по персоналу на {date.today().strftime('%d.%m.%Y')}*\n"]
         
-        total_people = 0
-        if discipline_summary:
-            for _, total in discipline_summary:
-                total_people += total
+        if not full_summary:
+            message_lines.append("_На сегодня еще не было подано ни одного табеля._")
+        else:
+            summary_by_discipline = {}
+            total_people = 0
+            for discipline, role, count in full_summary:
+                if discipline not in summary_by_discipline:
+                    summary_by_discipline[discipline] = {'total': 0, 'roles': []}
+                summary_by_discipline[discipline]['roles'].append(f"  - {role}: *{count}* чел.")
+                summary_by_discipline[discipline]['total'] += count
+                total_people += count
+            
             message_lines.insert(1, f"*Общее количество заявленных людей: {total_people}*\n")
             
-            message_lines.append("*По дисциплинам:*")
-            for name, total in discipline_summary:
-                message_lines.append(f"  ▪️ {name}: *{total}* чел.")
+            # Собираем итоговое сообщение
+            for discipline, data in summary_by_discipline.items():
+                message_lines.append(f"\n*{discipline} (Всего: {data['total']})*")
+                message_lines.extend(data['roles'])
 
-        if roles_summary:
-            message_lines.append("\n*По должностям:*")
-            for name, total in roles_summary:
-                message_lines.append(f"  ▪️ {name}: *{total}* чел.")
-
-        if not discipline_summary and not roles_summary:
-            message_lines.append("_На сегодня еще не было подано ни одного табеля._")
-
-        # Формируем кнопки для детализации
         keyboard = []
-        if discipline_summary:
+        if full_summary:
             message_lines.append("\n\nВыберите дисциплину для детального просмотра:")
-            for name, _ in discipline_summary:
-                keyboard.append([InlineKeyboardButton(f"Детально по «{name}»", callback_data=f"personnel_detail_{name}_1")]) # Добавляем _1 для первой страницы
+            # Получаем уникальные имена дисциплин из нашего словаря
+            for discipline_name in summary_by_discipline.keys():
+                keyboard.append([InlineKeyboardButton(f"Детально по «{discipline_name}»", callback_data=f"personnel_detail_{discipline_name}_1")])
 
         keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")])
         
@@ -4089,6 +4111,7 @@ def main() -> None:
                    ],
         per_user=True, per_chat=True, allow_reentry=True
     )
+ 
     roster_conv_handler = ConversationHandler(
     entry_points=[CallbackQueryHandler(start_roster_submission, pattern="^submit_roster$")],
     states={
@@ -4139,6 +4162,16 @@ def main() -> None:
         per_user=True, per_chat=True, allow_reentry=True
     )
 
+    level_change_handler = ConversationHandler(
+    entry_points=[CallbackQueryHandler(set_level, pattern="^set_level_")],
+    states={
+        AWAITING_DISCIPLINE_FOR_MANAGER: [CallbackQueryHandler(set_new_discipline_for_manager, pattern="^set_new_disc_")]
+    },
+    fallbacks=[CallbackQueryHandler(cancel_admin_action, pattern="^cancel_admin_action$")],
+    per_user=True
+)
+    application.add_handler(level_change_handler)
+
     application.add_handler(restore_conv_handler)
     application.add_handler(conv_handler)
     application.add_handler(report_conv_handler)
@@ -4174,7 +4207,6 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(show_discipline_change_menu, pattern="^change_discipline_"))
     application.add_handler(CallbackQueryHandler(set_discipline, pattern="^set_discipline_"))
     application.add_handler(CallbackQueryHandler(show_level_change_menu, pattern="^change_level_"))
-    application.add_handler(CallbackQueryHandler(set_level, pattern="^set_level_"))
     application.add_handler(CommandHandler("add_admin", add_admin))
     application.add_handler(CallbackQueryHandler(back_to_main_menu, pattern="^go_back_to_main_menu$"))
     application.add_handler(CallbackQueryHandler(back_to_main_menu, pattern="^main_menu_from_profile$"))
