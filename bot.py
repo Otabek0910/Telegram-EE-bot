@@ -1977,7 +1977,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                             f"{escape_markdown(get_text('output_short_label', lang), version=2)}: {escape_markdown(f'{percent:.1f}\\%', version=2)}"
                         )
                 else: # Если work_summary пусто после фильтрации (например, только нулевые объемы)
-                     message_lines.append(f"  _{escape_markdown(get_text('overview_no_detailed_data', lang), version=2)}_")
+                    message_lines.append(f"  _{escape_markdown(get_text('overview_no_detailed_data', lang), version=2)}_")
 
             else:
                 translated_discipline_name = get_data_translation(discipline_name_from_db, lang)
