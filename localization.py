@@ -171,6 +171,12 @@ TRANSLATIONS = {
 'hr_menu_title': "Меню «Людские ресурсы»",
 'hr_menu_status_button': "📊 Статус персонала на сегодня",
 'hr_menu_history_button': "🗓️ История табелей",
+'detail_by_discipline_button': "Детально по «{discipline}»",
+
+'hr_summary_title': "👥 Общая сводка по персоналу на сегодня",
+'total_people_today': "▪️ Всего заявлено сегодня: *{total}* чел.",
+'no_rosters_today': "На сегодня табели еще не поданы.",
+'roster_details_by_brigade_title': "👥 Детализация по «{discipline}» за {period}",
 
     },
     'en': {
@@ -341,6 +347,12 @@ TRANSLATIONS = {
 'hr_menu_title': "Human Resources Menu",
 'hr_menu_status_button': "📊 Personnel Status for Today",
 'hr_menu_history_button': "🗓️ Roster History",
+'detail_by_discipline_button': "Details for «{discipline}»",
+
+'hr_summary_title': "👥 Overall Personnel Summary for Today",
+'total_people_today': "▪️ Total declared today: *{total}* people",
+'no_rosters_today': "No rosters have been submitted for today yet.",
+'roster_details_by_brigade_title': "👥 Details for «{discipline}» for {period}",
 
     },
     'uz': {
@@ -511,6 +523,12 @@ TRANSLATIONS = {
 'hr_menu_title': "Xodimlar bo'limi menyusi",
 'hr_menu_status_button': "📊 Bugungi xodimlar holati",
 'hr_menu_history_button': "🗓️ Tabel tarixi",
+'detail_by_discipline_button': "«{discipline}» bo'yicha batafsil",
+
+'hr_summary_title': "👥 Bugungi xodimlar bo'yicha umumiy ma'lumot",
+'total_people_today': "▪️ Bugun jami e'lon qilingan: *{total}* kishi",
+'no_rosters_today': "Bugungi kun uchun hali tabel topshirilmagan.",
+'roster_details_by_brigade_title': "👥 {period} uchun «{discipline}» bo'yicha tafsilotlar",
 
     }
 }
