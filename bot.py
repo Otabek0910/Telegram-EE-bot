@@ -1883,7 +1883,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
     except Exception as e:
         logger.warning(f"Не удалось удалить сообщение в show_overview_dashboard_menu: {e}")
 
-    wait_msg = await context.bot.send_message(query.message.chat_id, f"⏳ {get_text('loading_please_wait', lang)}")
+    wait_msg = await context.bot.send_message(query.message.chat_id, escape_markdown(f"⏳ {get_text('loading_please_wait', lang)}", version=2), parse_mode="MarkdownV2")
 
     try:
         engine = create_engine(DATABASE_URL)
@@ -1900,7 +1900,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
         all_disciplines_db = db_query("SELECT name FROM disciplines ORDER BY name")
         if not all_disciplines_db:
-            await wait_msg.edit_text(f"⚠️ {get_text('overview_no_disciplines_error', lang)}")
+            await wait_msg.edit_text(escape_markdown(f"⚠️ {get_text('overview_no_disciplines_error', lang)}", version=2), parse_mode="MarkdownV2")
             return ConversationHandler.END
 
         all_disciplines = [name for name, in all_disciplines_db]
@@ -1924,7 +1924,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                 avg_performance_rounded = round(avg_performance, 1)
 
                 translated_discipline_name = get_data_translation(discipline_name_from_db, lang)
-                message_lines.append(f"\n✨ *{escape_markdown(translated_discipline_name, version=2)}* ({escape_markdown(get_text('total_label', lang), version=2)}: {escape_markdown(str(total_people), version=2)} {escape_markdown(get_text('people_label', lang), version=2)} | {escape_markdown(get_text('avg_output_label', lang), version=2)}: {escape_markdown(f'{avg_performance_rounded:.1f}%', version=2)})")
+                # Убедимся, что все части строки экранированы
+                message_lines.append(f"\n✨ *{escape_markdown(translated_discipline_name, version=2)}* \\({escape_markdown(get_text('total_label', lang), version=2)}: {escape_markdown(str(total_people), version=2)} {escape_markdown(get_text('people_label', lang), version=2)} \\| {escape_markdown(get_text('avg_output_label', lang), version=2)}: {escape_markdown(f'{avg_performance_rounded:.1f}%', version=2)}\\)")
 
                 work_summary = disc_df.groupby('work_type_name').agg(
                     total_fact=('volume', 'sum'),
@@ -1941,6 +1942,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                         plan = round(row['total_plan'], 1)
                         percent = round(row['percent'], 1)
 
+                        # Убедимся, что все части строки экранированы, особенно цифры и проценты
                         message_lines.append(f"  ▪️ {escaped_work_type}: {escape_markdown(get_text('fact_short_label', lang), version=2)}: {escape_markdown(f'{fact:.1f}', version=2)} / {escape_markdown(get_text('plan_short_label', lang), version=2)}: {escape_markdown(f'{plan:.1f}', version=2)} / {escape_markdown(get_text('output_short_label', lang), version=2)}: {escape_markdown(f'{percent:.1f}%', version=2)}")
             else:
                 translated_discipline_name = get_data_translation(discipline_name_from_db, lang)
@@ -1966,7 +1968,6 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
     except Exception as e:
         logger.error(f"Ошибка в show_overview_dashboard_menu: {e}")
         await wait_msg.edit_text(f"❌ {escape_markdown(get_text('error_generic', lang), version=2)}", parse_mode="MarkdownV2")
-
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str) -> None:
     """Генерирует дашборд выработки для КОНКРЕТНОЙ дисциплины из PostgreSQL."""
     query = update.callback_query

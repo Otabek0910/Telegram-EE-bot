@@ -207,6 +207,33 @@ TRANSLATIONS = {
         'error_generic': 'Произошла ошибка. Пожалуйста, попробуйте еще раз.',
         'back_button': '◀️ Назад',
 
+        'overview_summary_title': 'Сводка План/Факт на сегодня',
+        'total_label': 'Всего',
+        'people_label': 'чел.',
+        'avg_output_label': 'Ср. выработка',
+        'fact_short_label': 'Ф',
+        'plan_short_label': 'П',
+        'output_short_label': 'В-ка',
+        'overview_no_data_for_discipline': 'отчетов не подано',
+        'overview_no_reports_overall': 'По всем дисциплинам сегодня отчеты не поданы.',
+        'overview_select_chart_prompt': 'Выберите дисциплину для просмотра графика:',
+        'back_button': '◀️ Назад',
+        'loading_please_wait': 'Загружаю, пожалуйста, подождите...',
+        'overview_no_disciplines_error': 'В базе данных нет дисциплин. Обратитесь к администратору.',
+        'error_generic': 'Произошла непредвиденная ошибка. Пожалуйста, попробуйте позже.',
+
+        # --- Переводы, которые могут использоваться также в generate_overview_chart ---
+        'generating_dashboard_for': 'Формирую дашборд для «{}»...',
+        'no_data_for_dashboard': 'Нет данных для построения дашборда по дисциплине «{}».',
+        'no_chart_data_excluding_other': 'Нет данных для построения графика по дисциплине «{}» (исключены "Прочие" работы).',
+        'fact_label': 'Факт', # Полное название для графика
+        'plan_label': 'План', # Полное название для графика
+        'work_output_chart_title': 'Выработка по видам работ: {}',
+        'total_volume_label': 'Суммарный объем',
+        'legend_label': 'Легенда',
+        'dashboard_caption_title': 'Дашборд по дисциплине «{}»',
+        'data_period': 'Данные за период с {} по {}',
+
     },
     'en': {
         # --- General ---
@@ -411,6 +438,32 @@ TRANSLATIONS = {
         'overview_no_data': 'No data available for the overview yet.',
         'error_generic': 'An error occurred. Please try again.',
         'back_button': '◀️ Back',
+
+        'overview_summary_title': 'Plan/Fact Summary for Today',
+        'total_label': 'Total',
+        'people_label': 'ppl.',
+        'avg_output_label': 'Avg. Output',
+        'fact_short_label': 'F',
+        'plan_short_label': 'P',
+        'output_short_label': 'Out',
+        'overview_no_data_for_discipline': 'no reports submitted',
+        'overview_no_reports_overall': 'No reports submitted for any discipline today.',
+        'overview_select_chart_prompt': 'Select a discipline to view the chart:',
+        'back_button': '◀️ Back',
+        'loading_please_wait': 'Loading, please wait...',
+        'overview_no_disciplines_error': 'No disciplines found in the database. Please contact the administrator.',
+        'error_generic': 'An unexpected error occurred. Please try again later.',
+
+        'generating_dashboard_for': 'Generating dashboard for «{}»...',
+        'no_data_for_dashboard': 'No data to build a dashboard for discipline «{}».',
+        'no_chart_data_excluding_other': 'No chart data for discipline «{}» (excluding "Other" works).',
+        'fact_label': 'Fact',
+        'plan_label': 'Plan',
+        'work_output_chart_title': 'Output by Work Type: {}',
+        'total_volume_label': 'Total Volume',
+        'legend_label': 'Legend',
+        'dashboard_caption_title': 'Dashboard for discipline «{}»',
+        'data_period': 'Data for the period from {} to {}',
 
     },
     'uz': {
