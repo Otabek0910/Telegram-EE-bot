@@ -1862,6 +1862,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 # Код для полной замены
 
+# Код для полной замены
 async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает меню выбора дашборда со сводкой План/Факт за сегодня (НОВАЯ ВЕРСИЯ)."""
     query = update.callback_query
@@ -1892,9 +1893,13 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         with engine.connect() as connection:
             df = pd.read_sql_query(text(pd_query), connection, params={'today': today_str})
 
-        message_lines = [f"*{get_text('overview_summary_title', lang)}*"]
+        # ИЗМЕНЕНИЕ 1: Добавляем эмодзи к заголовку здесь
+        message_lines = [f"📊 *{get_text('overview_summary_title', lang)}*"]
         
         all_disciplines = [row[0] for row in db_query("SELECT name FROM disciplines ORDER BY name")]
+        
+        # Список дисциплин, по которым были поданы отчеты
+        reported_disciplines = df['discipline_name'].unique().tolist() if not df.empty else []
 
         if not all_disciplines:
             message_lines.append(f"\n_{get_text('overview_no_data', lang)}_")
@@ -1902,43 +1907,57 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
             if not df.empty:
                 df['planned_volume'] = pd.to_numeric(df['people_count'], errors='coerce') * pd.to_numeric(df['norm_per_unit'], errors='coerce')
                 df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-                df['output_percentage'] = (df['volume'] / df['planned_volume'].replace(0, 1)) * 100
 
-            for disc_name in all_disciplines:
+            has_any_reports = False # Флаг для отслеживания, были ли хоть какие-то отчеты
+
+            for i, disc_name in enumerate(all_disciplines):
                 # Фильтруем DataFrame для текущей дисциплины
                 disc_df = df[df['discipline_name'] == disc_name] if not df.empty else pd.DataFrame()
                 
-                message_lines.append(f"\n- *{get_data_translation(disc_name, lang)}*")
+                if not disc_df.empty:
+                    has_any_reports = True
+                    # ИЗМЕНЕНИЕ 2: Добавляем пустую строку перед новой дисциплиной с отчетами
+                    # Это предотвратит двойные пустые строки, если первая дисциплина уже имеет данные
+                    if message_lines[-1] != f"📊 *{get_text('overview_summary_title', lang)}*": 
+                         message_lines.append("")
 
-                if disc_df.empty:
-                    message_lines.append(get_text('overview_discipline_no_reports', lang))
-                    continue
+                    # Считаем общие показатели по дисциплине
+                    total_people = disc_df['people_count'].sum()
+                    avg_performance = (disc_df['volume'].sum() / disc_df['planned_volume'].sum() * 100) if disc_df['planned_volume'].sum() > 0 else 0
+                    
+                    message_lines.append(
+                        get_text('overview_discipline_summary', lang).format(
+                            discipline=get_data_translation(disc_name, lang),
+                            people=int(total_people),
+                            performance=f"{avg_performance:.1f}"
+                        )
+                    )
+                    
+                    # Считаем разбивку по видам работ
+                    work_summary = disc_df.groupby('work_type_name').agg(
+                        total_fact=('volume', 'sum'),
+                        total_plan=('planned_volume', 'sum')
+                    ).reset_index()
+                    work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
+                    
+                    for _, row in work_summary.iterrows():
+                        message_lines.append(get_text('overview_work_type_line', lang).format(
+                            work_type=get_data_translation(row['work_type_name'], lang),
+                            fact=row['total_fact'],
+                            plan=row['total_plan'],
+                            percent=row['percent']
+                        ))
+            
+            # ИЗМЕНЕНИЕ 3: Добавляем сообщение о дисциплинах без отчетов, если таковые были
+            unreported_disciplines_exist = any(d not in reported_disciplines for d in all_disciplines)
+            if unreported_disciplines_exist:
+                if has_any_reports: # Добавляем пустую строку, если перед этим были отчеты по другим дисциплинам
+                     message_lines.append("")
+                message_lines.append(get_text('no_reports_for_other_disciplines', lang))
 
-                # Считаем общие показатели по дисциплине
-                total_people = disc_df['people_count'].sum()
-                avg_performance = (disc_df['volume'].sum() / disc_df['planned_volume'].sum() * 100) if disc_df['planned_volume'].sum() > 0 else 0
-                
-                message_lines[len(message_lines)-1] = get_text('overview_discipline_summary', lang).format(
-                    discipline=get_data_translation(disc_name, lang),
-                    people=int(total_people),
-                    performance=f"{avg_performance:.1f}"
-                )
-                
-                # Считаем разбивку по видам работ
-                work_summary = disc_df.groupby('work_type_name').agg(
-                    total_fact=('volume', 'sum'),
-                    total_plan=('planned_volume', 'sum')
-                ).reset_index()
-                work_summary['percent'] = (work_summary['total_fact'] / work_summary['total_plan'].replace(0, 1)) * 100
-                
-                for _, row in work_summary.iterrows():
-                    message_lines.append(get_text('overview_work_type_line', lang).format(
-                        work_type=get_data_translation(row['work_type_name'], lang),
-                        fact=row['total_fact'],
-                        plan=row['total_plan'],
-                        percent=row['percent']
-                    ))
-
+        # ИЗМЕНЕНИЕ 4: Добавляем пустую строку перед последним запросом выбора графика
+        if len(message_lines) > 1: # Убедимся, что это не только заголовок или пустое сообщение
+            message_lines.append("")
         message_lines.append(get_text('overview_select_chart_prompt', lang))
         
         # Формируем кнопки
@@ -1976,8 +1995,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         """
         with engine.connect() as connection:
             reports_df = pd.read_sql_query(text(query_text), connection, params={'discipline_name': discipline_name})
-        # <<< КОНЕЦ ИЗМЕНЕНИЯ >>>
-
+    
         if reports_df.empty:
             await query.edit_message_text(
                 text=f"⚠️ *Нет данных для построения дашборда по дисциплине «{discipline_name}».*",
@@ -2003,7 +2021,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         fig, ax = plt.subplots(figsize=(12, fig_height), dpi=100)
         
         new_labels = [f"{name} ({perc:.0f}%)" for name, perc in zip(work_type_summary.index, work_type_summary['percentage'])]
-        work_type_summary[['Факт', 'План']].plot(kind='barh', ax=ax, width=0.8, color={'Факт': '#4A90E2', 'План': '#CCCCCC'})
+        work_type_summary[['Факт', 'План']].plot(kind='barh', ax=ax, width=0.8, color={'Факт': "#99EFA3", 'План': "#7A85EA"})
         
         ax.set_yticks(range(len(new_labels)))
         ax.set_yticklabels(new_labels)
@@ -2025,7 +2043,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         caption_text = f"*📊 Дашборд по дисциплине «{discipline_name}»*\n_Данные за период с {min_date} по {max_date}_"
 
         user_role = check_user_role(str(query.from_user.id))
-        back_button_callback = "report_overview" if (user_role.get('isAdmin') or user_role.get('managerLevel') == 1) else "report_menu_all"
+        back_button_callback = "overview_summary_title" if (user_role.get('isAdmin') or user_role.get('managerLevel') == 1) else "report_menu_all"
         keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data=back_button_callback)]]
 
         await context.bot.send_photo(
