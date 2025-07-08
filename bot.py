@@ -491,6 +491,8 @@ async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str,
 
     if REPORTS_GROUP_URL:
          keyboard_buttons.append([InlineKeyboardButton(get_text('reports_group_button', lang), url=REPORTS_GROUP_URL)])
+    if any(user_role.values()):
+        keyboard_buttons.append([InlineKeyboardButton(get_text('change_language_button', lang), callback_data="select_language")])
 
     keyboard = InlineKeyboardMarkup(keyboard_buttons)
     
@@ -3234,9 +3236,29 @@ async def show_work_types_page(update: Update, context: ContextTypes.DEFAULT_TYP
 
     keyboard_buttons = []
     # Названия видов работ (work_name) берутся из БД и не переводятся
+    # Новый код
     for work_id, work_name in works_on_page:
-     translated_name = get_data_translation(work_name, lang)
-     keyboard_buttons.append([InlineKeyboardButton(translated_name, callback_data=f"report_work_{work_id}")])
+        unit = ''
+        cleaned_name = work_name
+
+        # Если есть запятая, делим название на "чистое имя" и "единицу измерения"
+        if ',' in work_name:
+            try:
+                cleaned_name, unit = work_name.rsplit(',', 1)
+                cleaned_name = cleaned_name.strip()
+                # Добавляем запятую и пробел обратно для красивого вида
+                unit = f", {unit.strip()}" 
+            except ValueError:
+                # На случай, если что-то пойдет не так
+                pass
+        
+        # Переводим только чистое название
+        translated_base = get_data_translation(cleaned_name, lang)
+
+        # Собираем финальный текст для кнопки, добавляя единицу измерения обратно
+        button_text = f"{translated_base}{unit}"
+
+        keyboard_buttons.append([InlineKeyboardButton(button_text, callback_data=f"report_work_{work_id}")])
 
     navigation_buttons = []
     if page > 1:
@@ -4094,13 +4116,18 @@ async def paginate_work_types(update: Update, context: ContextTypes.DEFAULT_TYPE
     page = int(query.data.split('_')[-1])
     await show_work_types_page(update, context, page=page)
 
+# Код для полной замены
+
 async def show_foreman_performance(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Показывает отчет о выработке для конкретного бригадира из PostgreSQL."""
+    """Показывает отчет о выработке для бригадира (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("⏳ Анализирую вашу выработку...")
 
     user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
+    
+    await query.edit_message_text(get_text('foreman_performance_analyzing', lang))
+
     user_role = check_user_role(user_id)
     brigade_name = user_role.get('brigadeName')
 
@@ -4120,32 +4147,37 @@ async def show_foreman_performance(update: Update, context: ContextTypes.DEFAULT
         with engine.connect() as connection:
             reports_df = pd.read_sql_query(text(query_text), connection, params={'brigade_name': brigade_name})
 
+        title = f"*{get_text('foreman_performance_title', lang)}*"
+        
         if reports_df.empty:
-            message_text = "📊 *Ваша выработка*\n\n_У вас пока нет сданных отчетов._"
+            message_text = f"{title}\n\n_{get_text('foreman_performance_no_reports', lang)}_"
         else:
             reports_df['planned_volume'] = reports_df['people_count'] * reports_df['norm_per_unit']
             reports_df['output_percentage'] = (reports_df['volume'] / reports_df['planned_volume'].replace(0, 1)) * 100
             avg_performance = reports_df['output_percentage'].mean()
             
             message_lines = [
-                f"📊 *Ваша выработка (последние 5 отчетов):*",
-                f"▪️ Средний процент выполнения нормы: *{avg_performance:.1f}%*\n"
+                title,
+                f"{get_text('foreman_performance_avg_label', lang)} *{avg_performance:.1f}%*\n"
             ]
             
             for index, row in reports_df.iterrows():
-                # <<< ИСПРАВЛЕНИЕ ЗДЕСЬ: убираем лишний strptime >>>
                 report_date_formatted = row['report_date'].strftime("%d.%m.%Y")
+                
+                # Переводим название вида работ
+                work_type_translated = get_data_translation(row['work_type_name'], lang)
+                
                 message_lines.append(
-                    f"*{report_date_formatted}* - {row['work_type_name']}\n"
-                    f"  Объем: {row['volume']} {row['unit_of_measure']} / Выработка: *{row['output_percentage']:.1f}%*"
+                    f"*{report_date_formatted}* - {work_type_translated}\n"
+                    f"  {get_text('foreman_performance_volume_label', lang)}: {row['volume']} {row['unit_of_measure']} / {get_text('foreman_performance_output_label', lang)}: *{row['output_percentage']:.1f}%*"
                 )
             message_text = "\n".join(message_lines)
 
     except Exception as e:
         logger.error(f"Ошибка при создании отчета для бригадира: {e}")
-        message_text = "❌ Произошла ошибка при формировании вашего отчёта."
+        message_text = f"❌ {get_text('error_generic', lang)}"
 
-    keyboard = [[InlineKeyboardButton("◀️ Назад к выбору отчета", callback_data="report_menu_all")]]
+    keyboard = [[InlineKeyboardButton(get_text('foreman_performance_back_button', lang), callback_data="report_menu_all")]]
     await query.edit_message_text(
         text=message_text,
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -4301,16 +4333,31 @@ def update_user_language(user_id: str, lang_code: str):
                 logger.info(f"[DEBUG] Выполнена попытка UPDATE для таблицы {table}.")
     logger.info(f"[DEBUG] === Завершение обновления языка для {user_id_str} ===")
 
+# Код для полной замены
+
 async def select_language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает инлайн-кнопки для выбора языка."""
+    """Показывает инлайн-кнопки для выбора языка (работает и от команды, и от кнопки)."""
+    lang = get_user_language(str(update.effective_user.id))
+    
     keyboard = [
         [InlineKeyboardButton("English 🇬🇧", callback_data="set_lang_en")],
         [InlineKeyboardButton("Русский 🇷🇺", callback_data="set_lang_ru")],
         [InlineKeyboardButton("O'zbekcha 🇺🇿", callback_data="set_lang_uz")],
     ]
+    # Если это не первое приветствие, добавим кнопку "Назад"
+    if update.callback_query:
+        keyboard.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="go_back_to_main_menu")])
+
     reply_markup = InlineKeyboardMarkup(keyboard)
-    # Используем get_text с языком по умолчанию, так как мы еще не знаем выбор пользователя
-    await update.message.reply_text(get_text('language_prompt', 'ru'), reply_markup=reply_markup)
+    text = get_text('language_prompt', lang)
+
+    # Если функция вызвана нажатием на кнопку, редактируем сообщение
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    # Если вызвана командой /language, отправляем новое
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup)
 
 async def set_language_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обрабатывает нажатие на кнопку выбора языка."""
@@ -4493,6 +4540,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(set_language_callback, pattern="^set_lang_"))
     application.add_handler(CallbackQueryHandler(show_hr_menu, pattern="^hr_menu$"))
     application.add_handler(CallbackQueryHandler(show_paginated_brigade_report, pattern="^hr_report_"))
+    application.add_handler(CallbackQueryHandler(select_language_menu, pattern="^select_language$"))
   
           
     # Запускаем бота

@@ -184,6 +184,16 @@ TRANSLATIONS = {
 
 'main_menu_roster_summary_compact': "Табель на сегодня: *{total}* чел. (в резерве: *{reserve}*)",
 
+'change_language_button': "🌐 Язык",
+
+'foreman_performance_analyzing': "⏳ Анализирую вашу выработку...",
+'foreman_performance_title': "📊 Ваша выработка (последние 5 отчетов)",
+'foreman_performance_no_reports': "У вас пока нет сданных отчетов.",
+'foreman_performance_avg_label': "▪️ Средний процент выполнения нормы:",
+'foreman_performance_volume_label': "Объем",
+'foreman_performance_output_label': "Выработка",
+'foreman_performance_back_button': "◀️ Назад к выбору отчета",
+
     },
     'en': {
         # --- General ---
@@ -366,6 +376,16 @@ TRANSLATIONS = {
 
 'main_menu_roster_summary_compact': "Roster for today: *{total}* people (in reserve: *{reserve}*)",
 
+'change_language_button': "🌐 Language",
+
+'foreman_performance_analyzing': "⏳ Analyzing your performance...",
+'foreman_performance_title': "📊 Your Performance (last 5 reports)",
+'foreman_performance_no_reports': "You have no submitted reports yet.",
+'foreman_performance_avg_label': "▪️ Average percentage of norm completion:",
+'foreman_performance_volume_label': "Volume",
+'foreman_performance_output_label': "Performance",
+'foreman_performance_back_button': "◀️ Back to report selection",
+
     },
     'uz': {
         # --- Umumiy ---
@@ -547,6 +567,16 @@ TRANSLATIONS = {
 'hr_report_summary': "▪️ E'lon qilingan: *{total_people}* kishi ▪️ Tabel topshirgan: *{brigade_count}* brigada",
 
 'main_menu_roster_summary_compact': "Bugungi tabel: *{total}* kishi (rezervda: *{reserve}*)",
+
+'change_language_button': "🌐 Til",
+
+'foreman_performance_analyzing': "⏳ Analyzing your performance...",
+'foreman_performance_title': "📊 Your Performance (last 5 reports)",
+'foreman_performance_no_reports': "You have no submitted reports yet.",
+'foreman_performance_avg_label': "▪️ Average percentage of norm completion:",
+'foreman_performance_volume_label': "Volume",
+'foreman_performance_output_label': "Performance",
+'foreman_performance_back_button': "◀️ Back to report selection",
 
     }
 }
