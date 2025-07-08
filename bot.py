@@ -1833,7 +1833,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if user_role.get('isForeman'):
          dashboard_buttons.append([InlineKeyboardButton(get_text('foreman_performance_button', lang), callback_data="foreman_performance")])
     else:
-        dashboard_buttons.append([InlineKeyboardButton(get_text('report_overview_button', lang), callback_data="report_overview")])
+        dashboard_buttons.append([InlineKeyboardButton(get_text('report_overview_button', lang), callback_data="back_to_overview_dashboard")])
         if user_role.get('isManager') or user_role.get('isPto'):
           dashboard_buttons.append([InlineKeyboardButton(get_text('problem_brigades_button', lang), callback_data="handle_problem_brigades_button")])
         if user_role.get('isManager'):
@@ -2055,7 +2055,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
 
     except Exception as e:
         logger.error(f"Ошибка при создании дашборда: {e}")
-        await query.edit_message_text(f"❗*{escape_markdown(get_text('error_generic_dashboard', lang), version=2)}*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]]), parse_mode="MarkdownV2")
+        await query.edit_message_text(f"❗*{escape_markdown(get_text('error_generic_dashboard', lang), version=2)}*", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(get_text('back_button', lang), callback_data="back_to_overview_dashboard")]]), parse_mode="MarkdownV2")
 
 async def show_historical_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
