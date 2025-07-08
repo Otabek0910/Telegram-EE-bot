@@ -1964,6 +1964,10 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     user_id = str(query.from_user.id)
     lang = get_user_language(user_id)
+
+    chat_id = query.message.chat_id
+    message_id = query.message.message_id
+    context.user_data['last_message_id'] = message_id
     
     await query.edit_message_text(
     f"⏳ {escape_markdown(get_text('generating_dashboard_for', lang), version=2)}",
@@ -2042,8 +2046,6 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         max_date = reports_df['report_date'].max().strftime('%d.%m.%Y')
         caption_text = f"*Дашборд по дисциплине {escape_markdown(get_data_translation(discipline_name, lang), version=2)}*\n_Данные за период: {escape_markdown(min_date, version=2)} — {escape_markdown(max_date, version=2)}_"
 
-        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]]
-
         await context.bot.send_photo(
             chat_id=query.message.chat_id,
             photo=open(dashboard_path, 'rb'),
@@ -2051,6 +2053,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
             parse_mode='MarkdownV2',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
+        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data="report_overview")]]
         await context.bot.delete_message(chat_id=query.message.chat_id, message_id=query.message.message_id)
 
     except Exception as e:
