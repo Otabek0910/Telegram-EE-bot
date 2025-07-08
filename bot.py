@@ -499,6 +499,24 @@ async def show_main_menu_logic(context: ContextTypes.DEFAULT_TYPE, user_id: str,
         sent_message = await context.bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode='Markdown')
         context.user_data['main_menu_message_id'] = sent_message.message_id
 
+async def force_user_to_main_menu(context: ContextTypes.DEFAULT_TYPE, user_id: str, greeting: str):
+    """
+    Принудительно отправляет пользователю новое главное меню, сбрасывая его состояние.
+    Эта функция не удаляет старые сообщения, а отправляет новое, чтобы пользователь точно его увидел.
+    """
+    try:
+        # Очищаем все временные данные, чтобы прервать любой диалог для этого пользователя
+        # Это важно, так как user_data хранится в разрезе (chat_id, user_id)
+        # Мы предполагаем, что user_id и chat_id для личных сообщений совпадают.
+        if (int(user_id), int(user_id)) in context.user_data:
+            context.user_data[(int(user_id), int(user_id))].clear()
+            logger.info(f"Данные (user_data) для пользователя {user_id} были очищены.")
+
+        # Отправляем новое сообщение с пояснением
+        await show_main_menu_logic(context, user_id, user_id, greeting=greeting)
+        logger.info(f"Пользователю {user_id} было принудительно показано главное меню.")
+    except Exception as e:
+        logger.error(f"Не удалось принудительно обновить меню для {user_id}: {e}")
 
 async def back_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Возвращает пользователя в главное меню, редактируя текущее сообщение."""
@@ -1123,8 +1141,7 @@ async def handle_manager_level(update: Update, context: ContextTypes.DEFAULT_TYP
     """ОБРАБАТЫВАЕТ ВЫБОР уровня и отправляет запрос (для Ур. 1) или переходит дальше."""
     query = update.callback_query
     await query.answer()
-    await query.delete_message() # Удаляем вопрос про уровень
-
+    
     user_id_str = str(query.from_user.id)
     level = int(query.data.split('_')[1])
     user_info = context.bot_data.get(user_id_str, {})
@@ -1163,7 +1180,17 @@ async def handle_manager_level(update: Update, context: ContextTypes.DEFAULT_TYP
     [InlineKeyboardButton("✅ Подтвердить", callback_data=approve_callback)],
     [InlineKeyboardButton("❌ Отклонить", callback_data=reject_callback)]
     ]
-    await context.bot.send_message(OWNER_ID, request_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    admin_ids_raw = db_query("SELECT user_id FROM admins")
+    admin_ids = [row[0] for row in admin_ids_raw] if admin_ids_raw else []
+
+    # Добавляем OWNER_ID в список, если его там еще нет, и убираем дубликаты
+    all_approvers = list(set(admin_ids + [OWNER_ID]))
+
+    for admin_id in all_approvers:
+     try:
+        await context.bot.send_message(admin_id, request_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+     except Exception as e:
+        logger.error(f"Не удалось отправить запрос на согласование админу {admin_id}: {e}")
     
     return ConversationHandler.END
 
@@ -1253,7 +1280,18 @@ async def handle_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [InlineKeyboardButton("✅ Подтвердить", callback_data=approve_callback)],
         [InlineKeyboardButton("❌ Отклонить", callback_data=reject_callback)]
     ]
-    await context.bot.send_message(OWNER_ID, request_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    
+    admin_ids_raw = db_query("SELECT user_id FROM admins")
+    admin_ids = [row[0] for row in admin_ids_raw] if admin_ids_raw else []
+
+    # Добавляем OWNER_ID в список, если его там еще нет, и убираем дубликаты
+    all_approvers = list(set(admin_ids + [OWNER_ID]))
+
+    for admin_id in all_approvers:
+     try:
+         await context.bot.send_message(admin_id, request_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+     except Exception as e:
+        logger.error(f"Не удалось отправить запрос на согласование админу {admin_id}: {e}")
 
     return ConversationHandler.END
 
@@ -1459,9 +1497,20 @@ async def cancel_roster_submission(update: Update, context: ContextTypes.DEFAULT
 
 # --- ОБРАБОТКА ПОДТВЕРЖДЕНИЯ/ОТКЛОНЕНИЯ ---
 async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает подтверждение, удаляет старые сообщения и показывает меню с приветствием."""
+    """Обрабатывает подтверждение, ПРОВЕРЯЯ ПРАВА НАЖАВШЕГО, и показывает меню."""
     query = update.callback_query
-    await query.answer()
+    
+    # <<< НАЧАЛО ПРОВЕРКИ ПРАВ АДМИНА >>>
+    approver_id = str(query.from_user.id)
+    approver_role = check_user_role(approver_id)
+    
+    # Только админ или Овнер могут нажимать на эти кнопки
+    if not approver_role.get('isAdmin'):
+        await query.answer("⛔️ У вас нет прав для выполнения этого действия.", show_alert=True)
+        return
+    # <<< КОНЕЦ ПРОВЕРКИ ПРАВ АДМИНА >>>
+
+    await query.answer() # Ответ для админа, что кнопка сработала
     
     parts = query.data.split('_')
     action, role, user_id = parts[0], parts[1], parts[2]
@@ -1471,46 +1520,182 @@ async def handle_approval(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text(f"⚠️ *Не удалось найти данные для пользователя {user_id}. Запрос мог устареть.*")
         return
 
-    # --- НОВАЯ ЛОГИКА СООБЩЕНИЙ (ШАГ 2) ---
     # Удаляем сообщение "Пожалуйста, ожидайте..." из чата пользователя
     pending_ids = user_info_to_approve.get('pending_message_ids', [])
-
     if pending_ids:
         for message_id in pending_ids:
-         try:
-            await context.bot.delete_message(chat_id=user_id, message_id=message_id)
-         except Exception as e:
-            logger.info(f"Не удалось удалить сообщение ожидания: {e}")
-            # --- СЛОВАРЬ ДЛЯ ПЕРЕВОДА РОЛЕЙ ---
+            try:
+                await context.bot.delete_message(chat_id=user_id, message_id=message_id)
+            except Exception as e:
+                logger.info(f"Не удалось удалить сообщение ожидания: {e}")
+
     role_rus_map = { 'manager': 'Руководитель', 'foreman': 'Бригадир', 'pto': 'ПТО', 'kiok': 'КИОК' }
-    # Получаем русское название роли, если его нет - используем системное
     role_rus = role_rus_map.get(role, role)
 
     if action == 'approve':
-        # ... (код для извлечения discipline и level)
         level = user_info_to_approve.get('level')
         discipline = user_info_to_approve.get('discipline')
         
         update_user_role(user_id, role, user_info_to_approve, discipline, level)
         await query.edit_message_text(f"✅ *Роль «{role_rus}» для {user_info_to_approve.get('first_name')} подтверждена.*")
         
-        # Показываем главное меню С ПРИВЕТСТВИЕМ
         greeting_text = f"🎉 *Ваша роль «{role_rus}» подтверждена!*"
         await show_main_menu_logic(context, user_id=user_id, chat_id=user_id, greeting=greeting_text)
 
     elif action == 'reject':
-        # Используем русское название в сообщении админу
         await query.edit_message_text(f"❌ *Запрос для {user_info_to_approve.get('first_name')} отклонен.*")
-
         keyboard = [[InlineKeyboardButton("🏠 В главное меню", callback_data="main_menu_from_profile")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        # И в сообщении для пользователя
         await context.bot.send_message(user_id, f"❌ *Ваш запрос на роль «{role_rus}» был отклонен.*", reply_markup=reply_markup, parse_mode='Markdown')
              
-    # Очищаем временные данные в любом случае
     if user_id in context.bot_data:
         del context.bot_data[user_id]
         logger.info(f"[APPROVE] Роль: {role}, Данные: {user_info_to_approve}")
+
+async def list_reports_for_deletion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Показывает постраничный список отчетов для возможного удаления."""
+    query = update.callback_query
+    await query.answer()
+
+    page = int(query.data.split('_')[-1])
+    user_id = str(query.from_user.id)
+    user_role = check_user_role(user_id)
+    items_per_page = 5
+    offset = (page - 1) * items_per_page
+    
+    # Собираем базовый запрос и параметры
+    base_query = "FROM reports "
+    where_clauses = []
+    params = []
+
+    if user_role.get('managerLevel') == 2:
+        where_clauses.append("discipline_name = %s")
+        params.append(user_role.get('discipline'))
+    elif user_role.get('isPto'):
+        where_clauses.append("discipline_name = %s")
+        params.append(user_role.get('discipline'))
+        
+    if where_clauses:
+        base_query += "WHERE " + " AND ".join(where_clauses)
+
+    # Запрос для подсчета общего количества
+    count_query = "SELECT COUNT(*) " + base_query
+    total_items_raw = db_query(count_query, tuple(params))
+    total_items = total_items_raw[0][0] if total_items_raw else 0
+    total_pages = math.ceil(total_items / items_per_page) if total_items > 0 else 1
+
+    # Запрос для получения данных страницы
+    data_query = "SELECT id, report_date, foreman_name, work_type_name " + base_query + "ORDER BY id DESC LIMIT %s OFFSET %s"
+    final_params = params + [items_per_page, offset]
+    reports = db_query(data_query, tuple(final_params))
+
+    message_text = f"🗑️ *Выберите отчет для удаления* (Стр. {page}/{total_pages})\n"
+    keyboard = []
+    if not reports:
+        message_text += "\n_Отчетов для удаления не найдено._"
+    else:
+        for report_id, report_date, foreman, work_type in reports:
+            date_str = report_date.strftime('%d.%m')
+            button_text = f"ID:{report_id} ({date_str}) - {foreman} - {work_type[:20]}..."
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"confirm_delete_{report_id}")])
+
+    # Кнопки пагинации
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"delete_report_list_{page-1}"))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"delete_report_list_{page+1}"))
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")])
+    await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+
+async def confirm_delete_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Запрашивает подтверждение на удаление отчета."""
+    query = update.callback_query
+    await query.answer()
+    report_id = query.data.split('_')[-1]
+
+    report_info = db_query("SELECT report_date, foreman_name, work_type_name FROM reports WHERE id = %s", (report_id,))
+    if not report_info:
+        await query.edit_message_text("❌ Ошибка: этот отчет уже удален.")
+        return
+
+    date, foreman, work = report_info[0]
+    text = (
+        f"‼️ *Вы уверены, что хотите удалить этот отчет?*\n\n"
+        f"▪️ ID: {report_id}\n"
+        f"▪️ Дата: {date.strftime('%d.%m.%Y')}\n"
+        f"▪️ Бригадир: {foreman}\n"
+        f"▪️ Вид работ: {work}\n\n"
+        f"Это действие необратимо."
+    )
+    keyboard = [
+        [InlineKeyboardButton("✅ Да, удалить", callback_data=f"execute_delete_{report_id}")],
+        [InlineKeyboardButton("❌ Нет, вернуться к списку", callback_data="delete_report_list_1")]
+    ]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def execute_delete_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Выполняет удаление отчета и обновляет список."""
+    query = update.callback_query
+    await query.answer("Удаляю...")
+    report_id = query.data.split('_')[-1]
+    
+    # Просто удаляем отчет. Логика резерва пересчитается сама при следующей проверке.
+    db_query("DELETE FROM reports WHERE id = %s", (report_id,))
+    
+    logger.info(f"Пользователь {query.from_user.id} удалил отчет с ID {report_id}")
+    await query.edit_message_text("✅ Отчет успешно удален. Обновляю список...")
+
+    # Возвращаемся к первой странице списка
+    query.data = "delete_report_list_1"
+    await list_reports_for_deletion(update, context)
+
+async def confirm_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Запрашивает подтверждение на сброс табеля."""
+    query = update.callback_query
+    await query.answer()
+    user_id_to_reset = query.data.split('_')[-1]
+
+    user_data = db_query("SELECT first_name, last_name FROM brigades WHERE user_id = %s", (user_id_to_reset,))
+    if not user_data:
+        await query.edit_message_text("❌ Ошибка: бригадир не найден.")
+        return
+        
+    full_name = f"{user_data[0][0]} {user_data[0][1]}"
+    
+    text = (
+        f"‼️ *Вы уверены, что хотите сбросить сегодняшний табель для бригадира {full_name}?*\n\n"
+        f"Он сможет подать его заново. Это действие необратимо."
+    )
+    keyboard = [
+        [InlineKeyboardButton("✅ Да, сбросить", callback_data=f"execute_reset_roster_{user_id_to_reset}")],
+        [InlineKeyboardButton("❌ Нет, вернуться назад", callback_data=f"edit_user_brigades_{user_id_to_reset}")]
+    ]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+
+async def execute_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Удаляет сегодняшний табель для бригадира и уведомляет его."""
+    query = update.callback_query
+    await query.answer("Сбрасываю табель...")
+    user_id_to_reset = query.data.split('_')[-1]
+    
+    today_str = date.today().strftime('%Y-%m-%d')
+    
+    # Удаляем запись из daily_rosters. Записи в daily_roster_details удалятся автоматически (ON DELETE CASCADE)
+    db_query("DELETE FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id_to_reset, today_str))
+    
+    logger.info(f"Админ {query.from_user.id} сбросил табель для пользователя {user_id_to_reset}")
+    
+    await query.edit_message_text("✅ Табель на сегодня успешно сброшен.")
+    
+    # Отправляем уведомление бригадиру и обновляем его меню
+    greeting_text = "⚠️ Администратор сбросил ваш сегодняшний табель. Пожалуйста, подайте его заново."
+    await force_user_to_main_menu(context, user_id_to_reset, greeting_text)
 
 
 # --- Отчет для руководителя---
@@ -1637,6 +1822,9 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         if user_role.get('isManager') or user_role.get('isAdmin') or user_role.get('isPto'):
              dashboard_buttons.append([InlineKeyboardButton("👥 Статус персонала", callback_data="personnel_status")])
+
+        if user_role.get('isManager') or user_role.get('isAdmin') or user_role.get('isPto'):
+             dashboard_buttons.append([InlineKeyboardButton("🗑️ Удалить отчет", callback_data="delete_report_list_1")])
 
     # Общая кнопка "Назад в меню" для всех
     dashboard_buttons.append([InlineKeyboardButton("🏠 В главное меню", callback_data="go_back_to_main_menu")])
@@ -2332,25 +2520,33 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(text=message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удаляет пользователя из таблицы ролей."""
+async def set_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обновляет дисциплину для пользователя и принудительно обновляет его меню."""
     query = update.callback_query
-    await query.answer("Удаляю...")
-    
-    parts = query.data.split('_')
-    role_to_delete, user_id_to_delete = parts[2], parts[3]
-    
-    db_query(f"DELETE FROM {role_to_delete} WHERE user_id = %s", (user_id_to_delete,))
-    
-    await context.bot.send_message(chat_id=query.message.chat_id, text=f"✅ *Пользователь {user_id_to_delete} удален из роли {role_to_delete}.*")
-    
-    # Обновляем список, чтобы показать изменения
-    # Переходим на первую страницу списка после удаления
-    query.data = f"list_users_{role_to_delete}_1"
-    await list_users(update, context)
-    # Удаляем сообщение с подтверждением, чтобы не засорять чат
-    await query.message.delete()
+    await query.answer("Обновляю дисциплину...")
 
+    parts = query.data.split('_')
+    role, user_id_to_edit, new_discipline_id = parts[2], parts[3], int(parts[4])
+    
+    db_query(f"UPDATE {role} SET discipline = %s WHERE user_id = %s", (new_discipline_id, user_id_to_edit))
+    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (new_discipline_id,))
+    new_discipline_name = discipline_name_raw[0][0] if discipline_name_raw else "Неизвестно"
+
+    # Отправляем пользователю уведомление и новое меню
+    greeting_text = f"⚙️ Администратор изменил вашу дисциплину на «{new_discipline_name}»."
+    await force_user_to_main_menu(context, user_id_to_edit, greeting_text)
+
+    # Уведомляем админа об успехе
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text=f"✅ Дисциплина для пользователя `{user_id_to_edit}` изменена на *{new_discipline_name}*.",
+        parse_mode="Markdown"
+    )
+    
+    # Возвращаем админа к списку
+    await query.message.delete()
+    query.data = f"list_users_{role}_1"
+    await list_users(update, context)
 
 # --- EXCEL---
 async def export_reports_to_excel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2652,9 +2848,12 @@ async def show_user_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         keyboard_buttons.append([InlineKeyboardButton("Изменить дисциплину", callback_data=f"change_discipline_{role}_{user_id_to_edit}")])
     elif role in ['brigades', 'pto', 'kiok']:
         keyboard_buttons.append([InlineKeyboardButton("Изменить дисциплину", callback_data=f"change_discipline_{role}_{user_id_to_edit}")])
-    
+    elif role == 'brigades':
+        keyboard_buttons.append([InlineKeyboardButton("Изменить дисциплину", callback_data=f"change_discipline_{role}_{user_id_to_edit}")])
+    # <<< ДОБАВЬТЕ ЭТУ КНОПКУ >>>
+        keyboard_buttons.append([InlineKeyboardButton("🔄 Сбросить сегодняшний табель", callback_data=f"reset_roster_{user_id_to_edit}")])
     # ДОБАВЛЯЕМ КНОПКУ УДАЛИТЬ
-    keyboard_buttons.append([InlineKeyboardButton("🗑️ Удалить пользователя", callback_data=f"delete_user_{role}_{user_id_to_edit}")])
+        keyboard_buttons.append([InlineKeyboardButton("🗑️ Удалить пользователя", callback_data=f"delete_user_{role}_{user_id_to_edit}")])
     
     # ИСПРАВЛЯЕМ КНОПКУ НАЗАД (добавляем _1 для первой страницы)
     keyboard_buttons.append([InlineKeyboardButton("◀️ Назад к списку", callback_data=f"list_users_{role}_1")])
@@ -2746,29 +2945,31 @@ async def show_level_change_menu(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 async def set_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обновляет уровень доступа для руководителя."""
+    """Обновляет уровень доступа для руководителя и принудительно обновляет его меню."""
     query = update.callback_query
     await query.answer("Обновляю уровень...")
 
-    # 1. Парсим callback_data: set_level_{user_id}_{level}
     parts = query.data.split('_')
     user_id_to_edit, new_level = parts[2], int(parts[3])
     
-    # 2. Обновляем запись в таблице 'managers'
     if new_level == 1:
         db_query("UPDATE managers SET level = %s, discipline = NULL WHERE user_id = %s", (new_level, user_id_to_edit))
     else:
         db_query("UPDATE managers SET level = %s WHERE user_id = %s", (new_level, user_id_to_edit))
 
+    # Отправляем пользователю уведомление и новое меню
+    greeting_text = f"⚙️ Администратор изменил ваш уровень руководства на «Уровень {new_level}»."
+    await force_user_to_main_menu(context, user_id_to_edit, greeting_text)
     
+    # Уведомляем админа об успехе
     await context.bot.send_message(
         chat_id=query.message.chat_id,
         text=f"✅ Уровень для руководителя `{user_id_to_edit}` изменен на *Уровень {new_level}*.",
         parse_mode="Markdown"
     )
     
+    # Возвращаем админа к списку
     await query.message.delete()
-    # 3. Автоматически возвращаемся к обновленному списку пользователей
     query.data = "list_users_managers_1"
     await list_users(update, context)
 
@@ -2812,6 +3013,33 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"✅ Пользователь *{new_admin_info['first_name']} {new_admin_info['last_name']}* (`{target_user_id}`) успешно назначен администратором.",
         parse_mode="Markdown"
     )
+
+async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаляет пользователя из таблицы ролей и принудительно обновляет его меню."""
+    query = update.callback_query
+    await query.answer("Удаляю...", show_alert=False)
+    
+    parts = query.data.split('_')
+    role_to_delete, user_id_to_delete = parts[2], parts[3]
+    
+    # Удаляем пользователя из БД
+    db_query(f"DELETE FROM {role_to_delete} WHERE user_id = %s", (user_id_to_delete,))
+    
+    # Отправляем пользователю уведомление и новое меню
+    greeting_text = "⚠️ Ваша роль была удалена администратором. Для дальнейшей работы пройдите авторизацию заново."
+    await force_user_to_main_menu(context, user_id_to_delete, greeting_text)
+    
+    # Уведомляем админа об успехе
+    await context.bot.send_message(
+        chat_id=query.message.chat_id, 
+        text=f"✅ Пользователь `{user_id_to_delete}` удален из роли *{role_to_delete}*.",
+        parse_mode="Markdown"
+    )
+    
+    # Обновляем список у админа
+    await query.message.delete()
+    query.data = f"list_users_{role_to_delete}_1"
+    await list_users(update, context)
 
 # --- Доп функции - Формирование отчета ---
 async def get_corpus_and_ask_work_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -3851,6 +4079,11 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(back_to_main_menu, pattern="^main_menu_from_profile$"))
     application.add_handler(CallbackQueryHandler(show_personnel_status, pattern="^personnel_status$"))
     application.add_handler(CallbackQueryHandler(generate_discipline_personnel_report, pattern="^personnel_detail_"))
+    application.add_handler(CallbackQueryHandler(list_reports_for_deletion, pattern="^delete_report_list_"))
+    application.add_handler(CallbackQueryHandler(confirm_delete_report, pattern="^confirm_delete_"))
+    application.add_handler(CallbackQueryHandler(execute_delete_report, pattern="^execute_delete_"))
+    application.add_handler(CallbackQueryHandler(confirm_reset_roster, pattern="^reset_roster_"))
+    application.add_handler(CallbackQueryHandler(execute_reset_roster, pattern="^execute_reset_roster_"))
     
     
     # Запускаем бота
