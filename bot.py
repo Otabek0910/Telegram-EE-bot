@@ -4265,26 +4265,31 @@ async def handle_kiok_decision(update: Update, context: ContextTypes.DEFAULT_TYP
 # --- ЛОКАЛИЗАЦИЯ ЯЗЫКОВ ---
 
 def get_user_language(user_id: str) -> str:
-    """Получает код языка пользователя из любой таблицы ролей."""
-    # Убедимся, что user_id - это строка для запросов
+    """Получает код языка пользователя с ОТЛАДКОЙ."""
     user_id_str = str(user_id)
+    logger.info(f"[DEBUG] --- Начинаю поиск языка для {user_id_str} ---")
     tables = ['admins', 'managers', 'brigades', 'pto', 'kiok']
     for table in tables:
-        # Проверяем, существует ли таблица в БД
         table_exists = db_query(f"SELECT to_regclass('public.{table}')")
         if table_exists and table_exists[0][0]:
-            # Проверяем наличие колонки
             col_check = db_query(f"SELECT 1 FROM information_schema.columns WHERE table_name='{table}' AND column_name='language_code' LIMIT 1")
             if col_check:
+                logger.info(f"[DEBUG] Проверяю таблицу {table} для {user_id_str}...")
                 lang_code_raw = db_query(f"SELECT language_code FROM {table} WHERE user_id = %s", (user_id_str,))
+                
+                # Проверяем, что запрос что-то вернул и значение не пустое
                 if lang_code_raw and lang_code_raw[0] and lang_code_raw[0][0]:
-                    return lang_code_raw[0][0]
-    return 'ru' # Язык по умолчанию, если пользователь не найден или нет записи о языке
-
+                    found_lang = lang_code_raw[0][0]
+                    logger.info(f"[DEBUG] НАЙДЕН ЯЗЫК! В таблице {table} для {user_id_str} стоит '{found_lang}'. Возвращаю его.")
+                    return found_lang
+    
+    logger.info(f"[DEBUG] Язык не найден ни в одной таблице. Возвращаю 'ru' по умолчанию для {user_id_str}.")
+    return 'ru'
 def update_user_language(user_id: str, lang_code: str):
-    """Обновляет язык пользователя во всех таблицах, где он есть."""
+    """Обновляет язык пользователя с ОТЛАДКОЙ."""
     user_id_str = str(user_id)
     tables = ['admins', 'managers', 'brigades', 'pto', 'kiok']
+    logger.info(f"[DEBUG] === Начинаю обновление языка для {user_id_str} на '{lang_code}' ===")
     for table in tables:
         # Проверяем наличие таблицы и колонки
         table_exists = db_query(f"SELECT to_regclass('public.{table}')")
@@ -4293,6 +4298,8 @@ def update_user_language(user_id: str, lang_code: str):
             if col_check:
                 # Обновляем, только если пользователь существует в этой таблице
                 db_query(f"UPDATE {table} SET language_code = %s WHERE user_id = %s", (lang_code, user_id_str))
+                logger.info(f"[DEBUG] Выполнена попытка UPDATE для таблицы {table}.")
+    logger.info(f"[DEBUG] === Завершение обновления языка для {user_id_str} ===")
 
 async def select_language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает инлайн-кнопки для выбора языка."""
