@@ -1634,20 +1634,21 @@ async def confirm_delete_report(update: Update, context: ContextTypes.DEFAULT_TY
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def execute_delete_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Выполняет удаление отчета и обновляет список."""
+    """Выполняет удаление отчета и показывает простое подтверждение."""
     query = update.callback_query
     await query.answer("Удаляю...")
     report_id = query.data.split('_')[-1]
     
-    # Просто удаляем отчет. Логика резерва пересчитается сама при следующей проверке.
+    # 1. Удаляем отчет из БД
     db_query("DELETE FROM reports WHERE id = %s", (report_id,))
-    
     logger.info(f"Пользователь {query.from_user.id} удалил отчет с ID {report_id}")
-    await query.edit_message_text("✅ Отчет успешно удален. Обновляю список...")
-
-    # Возвращаемся к первой странице списка
-    query.data = "delete_report_list_1"
-    await list_reports_for_deletion(update, context)
+    
+    # 2. Просто редактируем сообщение с подтверждением
+    keyboard = [[InlineKeyboardButton("◀️ Назад к списку отчетов", callback_data="delete_report_list_1")]]
+    await query.edit_message_text(
+        "✅ Отчет успешно удален.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def confirm_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Запрашивает подтверждение на сброс табеля, ПРОВЕРЯЯ ПРАВА."""
@@ -2185,25 +2186,22 @@ async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAU
         parse_mode="Markdown"
     )
 
-async def generate_problem_brigades_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Генерирует детальный постраничный отчет по проблемным бригадам для КОНКРЕТНОЙ дисциплины.
-    Версия 2.0: Упрощенная и более надежная логика.
-    """
+async def generate_problem_brigades_report(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str = None, page: int = 1) -> None:
+    """Генерирует детальный постраничный отчет по проблемным бригадам для КОНКРЕТНОЙ дисциплины."""
     query = update.callback_query
     await query.answer()
 
-    parts = query.data.split('_')
-    discipline_name = parts[3]
-    page = int(parts[4])
+    # Если параметры не переданы напрямую, берем их из callback_data (для пагинации)
+    if discipline_name is None:
+        parts = query.data.split('_')
+        discipline_name = parts[3]
+        page = int(parts[4])
     
     await query.edit_message_text(f"⏳ Формирую детальный отчет для «{discipline_name}»...")
 
     try:
         today_str = date.today().strftime('%Y-%m-%d')
         
-        # 1. Находим бригады, которые ВООБЩЕ не сдали отчет сегодня
-        # Этот запрос находит бригады в нужной дисциплине, которых НЕТ в таблице отчетов за сегодня
         non_reporters_query = """
             SELECT b.brigade_name 
             FROM brigades b
@@ -2216,11 +2214,10 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
         non_reporters_raw = db_query(non_reporters_query, (discipline_name, today_str))
         non_reporters = {f"{name[0]} (не сдал отчет)" for name in non_reporters_raw} if non_reporters_raw else set()
 
-        # 2. Находим отстающих среди тех, кто отчет сдал
         low_performers = set()
         engine = create_engine(DATABASE_URL)
         pd_query = """
-            SELECT r.foreman_name, r.people_count, r.volume, wt.norm_per_unit
+            SELECT r.foreman_name, r.people_count, r.volume, wt.norm_per_unit, wt.work_type_name
             FROM reports r 
             JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
             WHERE r.discipline_name = :discipline_name AND r.report_date = :today
@@ -2229,30 +2226,27 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
             df = pd.read_sql_query(text(pd_query), connection, params={'discipline_name': discipline_name, 'today': today_str})
 
         if not df.empty:
-            # Исключаем "Прочие работы" из анализа выработки
             performance_df = df[~df['work_type_name'].str.contains('Прочие', case=False, na=False)].copy()
             if not performance_df.empty:
-                performance_df['planned_volume'] = pd.to_numeric(performance_df['people_count']) * pd.to_numeric(performance_df['norm_per_unit'])
-                # Избегаем деления на ноль
-                performance_df.loc[performance_df['planned_volume'] > 0, 'output_percentage'] = \
-                    (pd.to_numeric(performance_df['volume']) / pd.to_numeric(performance_df['planned_volume'])) * 100
-                performance_df['output_percentage'].fillna(100, inplace=True) # Если план 0, считаем выработку 100%
-
-                # Группируем и считаем среднюю выработку
+                performance_df['planned_volume'] = pd.to_numeric(performance_df['people_count'], errors='coerce') * pd.to_numeric(performance_df['norm_per_unit'], errors='coerce')
+                performance_df['output_percentage'] = 100.0
+                mask = performance_df['planned_volume'] > 0
+                performance_df.loc[mask, 'output_percentage'] = (pd.to_numeric(performance_df.loc[mask, 'volume']) / performance_df.loc[mask, 'planned_volume']) * 100
+                
                 avg_performance = performance_df.groupby('foreman_name')['output_percentage'].mean()
                 low_performers_series = avg_performance[avg_performance < 100]
                 low_performers = {f"{name} (ср. выработка {perc:.1f}%)" for name, perc in low_performers_series.items()}
 
-        # 3. Объединяем и сортируем
         final_problem_list = sorted(list(non_reporters.union(low_performers)))
-
-        # --- Логика пагинации и вывода (без изменений) ---
         items_per_page = 10
         total_items = len(final_problem_list)
+
         if total_items == 0:
-            message_text = f"✅ *По дисциплине «{discipline_name}» проблемных бригад не найдено!*"
-            keyboard = [[InlineKeyboardButton("◀️ К выбору дисциплин", callback_data="handle_problem_brigades")]]
-            await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            await query.edit_message_text(
+                f"✅ *По дисциплине «{discipline_name}» проблемных бригад не найдено!*",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К выбору дисциплин", callback_data="handle_problem_brigades")]]),
+                parse_mode="Markdown"
+            )
             return
 
         total_pages = math.ceil(total_items / items_per_page)
@@ -2262,13 +2256,10 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
         message_text = f"⚠️ *Проблемные бригады: {discipline_name}* (Стр. {page}/{total_pages})\n\n" + "\n".join(f"- {item}" for item in items_on_page)
 
         nav_buttons = []
-        if page > 1:
-            nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"gen_problem_report_{discipline_name}_{page-1}"))
-        if page < total_pages:
-            nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"gen_problem_report_{discipline_name}_{page+1}"))
+        if page > 1: nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"gen_problem_report_{discipline_name}_{page-1}"))
+        if page < total_pages: nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"gen_problem_report_{discipline_name}_{page+1}"))
 
         keyboard = [nav_buttons, [InlineKeyboardButton("◀️ К выбору дисциплин", callback_data="handle_problem_brigades")]]
-        
         await query.edit_message_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     except Exception as e:
@@ -2546,41 +2537,38 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text=message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def set_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обновляет дисциплину, сбрасывает состояние и табель, и принудительно обновляет меню."""
+    """Обновляет дисциплину, сбрасывает состояние/табель и показывает админу простое подтверждение."""
     query = update.callback_query
     await query.answer("Обновляю дисциплину...")
 
     parts = query.data.split('_')
     role, user_id_to_edit, new_discipline_id = parts[2], parts[3], int(parts[4])
     
+    # 1. Обновляем БД
     db_query(f"UPDATE {role} SET discipline = %s WHERE user_id = %s", (new_discipline_id, user_id_to_edit))
 
-    # === ИЗМЕНЕНИЕ: Принудительно удаляем состояние пользователя из памяти бота ===
-    context._application.user_data.pop(int(user_id_to_edit), None)
-    logger.info(f"Состояние для пользователя {user_id_to_edit} было полностью сброшено из-за смены дисциплины.")
-    
-    # Удаляем сегодняшний табель для этого бригадира, если это бригадир
-    if role == 'brigades':
-        today_str = date.today().strftime('%Y-%m-%d')
-        db_query("DELETE FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id_to_edit, today_str))
-        logger.info(f"Табель для {user_id_to_edit} на {today_str} был сброшен из-за смены дисциплины.")
+    # 2. Пытаемся уведомить пользователя и сбросить его состояние/табель
+    try:
+        context._application.user_data.pop(int(user_id_to_edit), None)
+        logger.info(f"Состояние для пользователя {user_id_to_edit} было полностью сброшено из-за смены дисциплины.")
+        if role == 'brigades':
+            today_str = date.today().strftime('%Y-%m-%d')
+            db_query("DELETE FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id_to_edit, today_str))
+            logger.info(f"Табель для {user_id_to_edit} на {today_str} был сброшен из-за смены дисциплины.")
+        
+        discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (new_discipline_id,))
+        new_discipline_name = discipline_name_raw[0][0] if discipline_name_raw else "Неизвестно"
+        greeting_text = f"⚙️ Администратор изменил вашу дисциплину на «{new_discipline_name}». Пожалуйста, подайте табель заново, если уже делали это сегодня."
+        await force_user_to_main_menu(context, user_id_to_edit, greeting_text)
+    except Exception as e:
+         logger.error(f"Не удалось уведомить пользователя {user_id_to_edit} о смене дисциплины. Ошибка: {e}")
 
-    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (new_discipline_id,))
-    new_discipline_name = discipline_name_raw[0][0] if discipline_name_raw else "Неизвестно"
-
-    greeting_text = f"⚙️ Администратор изменил вашу дисциплину на «{new_discipline_name}». Пожалуйста, подайте табель заново, если уже делали это сегодня."
-    # === ИЗМЕНЕНИЕ: Убран некорректный message_id ===
-    await force_user_to_main_menu(context, user_id_to_edit, greeting_text)
-
-    await context.bot.send_message(
-        chat_id=query.message.chat_id,
-        text=f"✅ Дисциплина для пользователя `{user_id_to_edit}` изменена на *{new_discipline_name}*.",
-        parse_mode="Markdown"
+    # 3. Просто редактируем сообщение админа с подтверждением
+    keyboard = [[InlineKeyboardButton(f"◀️ Назад к списку", callback_data=f"list_users_{role}_1")]]
+    await query.edit_message_text(
+        text=f"✅ Дисциплина изменена.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    
-    await query.message.delete()
-    query.data = f"list_users_{role}_1"
-    await list_users(update, context)
 
 # --- EXCEL---
 async def export_reports_to_excel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2958,46 +2946,44 @@ async def show_level_change_menu(update: Update, context: ContextTypes.DEFAULT_T
     )
 
 async def set_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Начинает процесс смены уровня. Если выбран Ур. 1, сбрасывает состояние и выполняет сразу."""
+    """Изменяет уровень руководителя и показывает админу простое подтверждение."""
     query = update.callback_query
     await query.answer()
 
     parts = query.data.split('_')
     user_id_to_edit, new_level = parts[2], int(parts[3])
     
-    # Сохраняем во временные данные, чтобы передать на следующий шаг
-    context.user_data['edit_user_id'] = user_id_to_edit
-    context.user_data['new_level'] = new_level
-    
-    # Если админ ставит Уровень 1, то дисциплина не нужна, выполняем сразу
     if new_level == 1:
         db_query("UPDATE managers SET level = 1, discipline = NULL WHERE user_id = %s", (user_id_to_edit,))
         
-        # === ИЗМЕНЕНИЕ: Принудительно удаляем состояние пользователя из памяти бота ===
-        context._application.user_data.pop(int(user_id_to_edit), None)
-        logger.info(f"Состояние для пользователя {user_id_to_edit} было полностью сброшено из-за смены уровня на 1.")
-        
-        greeting_text = "⚙️ Администратор изменил ваш уровень руководства на «Уровень 1»."
-        # === ИЗМЕНЕНИЕ: Убран некорректный message_id ===
-        await force_user_to_main_menu(context, user_id_to_edit, greeting_text)
-        
-        await query.edit_message_text(f"✅ Уровень для руководителя `{user_id_to_edit}` изменен на *Уровень 1*.")
-        # Завершаем диалог, если он был
+        try:
+            context._application.user_data.pop(int(user_id_to_edit), None)
+            logger.info(f"Состояние для пользователя {user_id_to_edit} было полностью сброшено из-за смены уровня на 1.")
+            greeting_text = "⚙️ Администратор изменил ваш уровень руководства на «Уровень 1»."
+            await force_user_to_main_menu(context, user_id_to_edit, greeting_text)
+        except Exception as e:
+            logger.error(f"Не удалось уведомить пользователя {user_id_to_edit} о смене уровня. Ошибка: {e}")
+
+        keyboard = [[InlineKeyboardButton("◀️ Назад к списку", callback_data="list_users_managers_1")]]
+        await query.edit_message_text(
+            text="✅ Уровень руководителя изменен на 1.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return ConversationHandler.END
     
-    # Если админ ставит Уровень 2, просим выбрать дисциплину
     elif new_level == 2:
+        context.user_data['edit_user_id'] = user_id_to_edit
         disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
         if not disciplines:
             await query.edit_message_text("Ошибка: нет дисциплин для назначения.")
             return ConversationHandler.END
         
-        keyboard = [[InlineKeyboardButton(name, callback_data=f"set_new_disc_{disc_id}")] for disc_id, name in disciplines]
-        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_admin_action")])
+        keyboard_btns = [[InlineKeyboardButton(name, callback_data=f"set_new_disc_{disc_id}")] for disc_id, name in disciplines]
+        keyboard_btns.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_admin_action")])
         
         await query.edit_message_text(
-            f"Теперь выберите дисциплину для руководителя `{user_id_to_edit}` (Уровень 2):",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            text=f"Теперь выберите дисциплину для руководителя `{user_id_to_edit}` (Уровень 2):",
+            reply_markup=InlineKeyboardMarkup(keyboard_btns),
             parse_mode="Markdown"
         )
         return AWAITING_DISCIPLINE_FOR_MANAGER
@@ -3044,10 +3030,7 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Удаляет пользователя, гарантированно уведомляет админа,
-    пытается уведомить пользователя и обновляет меню.
-    """
+    """Удаляет пользователя, уведомляет его, и показывает админу простое подтверждение."""
     query = update.callback_query
     await query.answer("Удаляю...", show_alert=False)
     
@@ -3057,27 +3040,22 @@ async def delete_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 1. Удаляем пользователя из БД
     db_query(f"DELETE FROM {role_to_delete} WHERE user_id = %s", (user_id_to_delete,))
     
-    # 2. Сразу уведомляем админа об успехе, чтобы он получил обратную связь
-    await context.bot.send_message(
-        chat_id=query.message.chat_id, 
-        text=f"✅ Пользователь `{user_id_to_delete}` удален из роли *{role_to_delete}*.",
-        parse_mode="Markdown"
-    )
-
-    # 3. Пытаемся уведомить пользователя и сбросить его состояние
+    # 2. Пытаемся уведомить пользователя и сбросить его состояние
     try:
         context._application.user_data.pop(int(user_id_to_delete), None)
         logger.info(f"Состояние для пользователя {user_id_to_delete} было полностью сброшено администратором.")
-        
         greeting_text = "⚠️ Ваша роль была удалена администратором. Для дальнейшей работы пройдите авторизацию заново."
         await force_user_to_main_menu(context, user_id_to_delete, greeting_text)
     except Exception as e:
         logger.error(f"Не удалось уведомить пользователя {user_id_to_delete} об удалении. Возможно, бот заблокирован. Ошибка: {e}")
 
-    # 4. Обновляем список у админа
-    await query.message.delete()
-    query.data = f"list_users_{role_to_delete}_1"
-    await list_users(update, context)
+    # 3. Просто редактируем сообщение админа с подтверждением
+    keyboard = [[InlineKeyboardButton(f"◀️ Назад к списку", callback_data=f"list_users_{role_to_delete}_1")]]
+    await query.edit_message_text(
+        text=f"✅ Пользователь `{user_id_to_delete}` удален.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
 
 async def set_new_discipline_for_manager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Завершает смену уровня на 2, назначая дисциплину и сбрасывая состояние."""
@@ -3777,22 +3755,21 @@ async def generate_discipline_personnel_report(update: Update, context: ContextT
         await query.edit_message_text("❌ Произошла ошибка при формировании отчета.")
 
 async def handle_problem_brigades_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Проверяет уровень руководителя и показывает правильный отчет по проблемным бригадам."""
+    """Корректно обрабатывает нажатие кнопки 'Проблемные бригады' в зависимости от роли."""
     query = update.callback_query
     await query.answer()
 
     user_role = check_user_role(str(query.from_user.id))
     
-    # Если это Рук. 2 уровня, сразу генерируем отчет для его дисциплины
-    if user_role.get('managerLevel') == 2:
+    # Если это Рук. 2 уровня или ПТО, сразу генерируем отчет для его дисциплины
+    if user_role.get('managerLevel') == 2 or user_role.get('isPto'):
         discipline = user_role.get('discipline')
         if not discipline:
             await query.edit_message_text("❗️Ошибка: Для вашей роли не задана дисциплина.")
             return
         
-        # Перенаправляем на первую страницу отчета
-        query.data = f"gen_problem_report_{discipline}_1"
-        await generate_problem_brigades_report(update, context)
+        # Напрямую вызываем генератор отчета для нужной дисциплины
+        await generate_problem_brigades_report(update, context, discipline_name=discipline, page=1)
         
     # Иначе (для Админа и Рук. 1 уровня) показываем меню выбора дисциплин
     else:
