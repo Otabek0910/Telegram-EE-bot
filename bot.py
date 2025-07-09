@@ -1107,9 +1107,9 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-            total_brigades_raw = db_query("SELECT COUNT(*) FROM brigades")
-            total_brigades = total_brigades_raw[0][0] if total_brigades_raw else 0
-            
+            success, total_brigades_raw = db_query("SELECT COUNT(*) FROM brigades")
+            total_brigades = total_brigades_raw[0][0] if success and total_brigades_raw else 0
+
             message_text_intro = (
                 f"📊 *{get_text('report_menu_summary_title', lang).format(period=period_text)}*\n\n"
                 f"▪️ {get_text('total_brigades_in_system', lang)} *{total_brigades}*\n"
@@ -1128,12 +1128,12 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             if not discipline_name:
                 raise ValueError("Дисциплина не найдена для этой роли.")
                 
-            discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
-            discipline_id = discipline_id_raw[0][0] if discipline_id_raw else None
-            
-            total_brigades_raw = db_query("SELECT COUNT(*) FROM brigades WHERE discipline = %s", (discipline_id,))
-            total_brigades = total_brigades_raw[0][0] if total_brigades_raw else 0
-            
+            success, discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
+            discipline_id = discipline_id_raw[0][0] if success and discipline_id_raw else None
+
+            success, total_brigades_raw = db_query("SELECT COUNT(*) FROM brigades WHERE discipline = %s", (discipline_id,))
+            total_brigades = total_brigades_raw[0][0] if success and total_brigades_raw else 0
+
             role_filter_sql = "AND discipline_name = %s"
             final_params = (discipline_name,) + tuple(date_params)
             message_text_intro = (
@@ -1142,9 +1142,8 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
 
         status_query = f"SELECT kiok_approved, COUNT(*) FROM reports WHERE 1=1 {role_filter_sql} {date_filter_sql} GROUP BY kiok_approved"
-        status_counts_raw = db_query(status_query, final_params)
-        
-        status_counts = {row[0]: row[1] for row in status_counts_raw} if status_counts_raw else {}
+        success, status_counts_raw = db_query(status_query, final_params)
+        status_counts = {row[0]: row[1] for row in status_counts_raw} if success and status_counts_raw else {}
         total_reports = sum(status_counts.values())
         approved = status_counts.get(1, 0)
         rejected = status_counts.get(-1, 0)
@@ -1436,8 +1435,9 @@ async def show_historical_report_menu(update: Update, context: ContextTypes.DEFA
         try:
             header = "📊 *Общая сводка по всем дисциплинам*"
             
-            report_stats_raw = db_query("SELECT kiok_approved, COUNT(*) FROM reports GROUP BY kiok_approved")
-            report_stats = {str(status): count for status, count in report_stats_raw} if report_stats_raw else {}
+            success, report_stats_raw = db_query("SELECT kiok_approved, COUNT(*) FROM reports GROUP BY kiok_approved")
+            report_stats = {str(status): count for status, count in report_stats_raw} if success and report_stats_raw else {}
+
             total_reports = sum(report_stats.values())
             
             today_str = date.today().strftime('%Y-%m-%d')
@@ -1525,21 +1525,22 @@ async def generate_discipline_dashboard(update: Update, context: ContextTypes.DE
         header = f"📊 *Подробный отчет по дисциплине «{get_data_translation(discipline_name, lang)}»*"
         params = (discipline_name,)
         
-        discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", params)
-        disc_id = discipline_id_raw[0][0] if discipline_id_raw else None
-        
+        success, discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", params)
+        disc_id = discipline_id_raw[0][0] if success and discipline_id_raw else None
+
         user_counts = {'brigades': 0, 'pto': 0, 'kiok': 0}
         if disc_id:
             for role in user_counts.keys():
-                count_raw = db_query(f"SELECT COUNT(*) FROM {role} WHERE discipline = %s", (disc_id,))
-                if count_raw: user_counts[role] = count_raw[0][0]
-        
-        report_stats_raw = db_query("SELECT kiok_approved, COUNT(*) FROM reports WHERE discipline_name = %s GROUP BY kiok_approved", params)
-        report_stats = {str(status): count for status, count in report_stats_raw} if report_stats_raw else {}
+                success, count_raw = db_query(f"SELECT COUNT(*) FROM {role} WHERE discipline = %s", (disc_id,))
+                if success and count_raw: user_counts[role] = count_raw[0][0]
+
+        success, report_stats_raw = db_query("SELECT kiok_approved, COUNT(*) FROM reports WHERE discipline_name = %s GROUP BY kiok_approved", params)
+        report_stats = {str(status): count for status, count in report_stats_raw} if success and report_stats_raw else {}
+
         total_reports = sum(report_stats.values())
         
         today_str = date.today().strftime('%Y-%m-%d')
-        all_brigades_q = db_query("SELECT brigade_name FROM brigades WHERE discipline = %s", (disc_id,)) if disc_id else []
+        success, all_brigades_q = db_query("SELECT brigade_name FROM brigades WHERE discipline = %s", (disc_id,)) if disc_id else (False, [])
         all_brigades = {row[0] for row in all_brigades_q}
         reported_today = {row[0] for row in db_query("SELECT DISTINCT foreman_name FROM reports WHERE discipline_name = %s AND report_date = %s", params + (today_str,))}
         non_reporters_count = len(all_brigades - reported_today)
