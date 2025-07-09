@@ -4969,36 +4969,36 @@ def main() -> None:
     per_user=True
 )
     admin_report_conv = ConversationHandler(
-        entry_points=[
-            CallbackQueryHandler(admin_report_menu, pattern="^admin_report_menu_start$")
+    entry_points=[
+        CallbackQueryHandler(admin_report_menu, pattern="^admin_report_menu_start$")
+    ],
+    states={
+        SELECT_DISC_FOR_EDIT: [
+            CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
         ],
-        states={
-            SELECT_DISC_FOR_EDIT: [
-                CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
-            ],
-            SELECT_BRIGADE_FOR_EDIT: [
-                CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_"),
-                CallbackQueryHandler(admin_prompt_for_date, pattern="^admin_pick_date$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_date_input),
-                CallbackQueryHandler(admin_report_menu, pattern="^admin_report_menu_start$")
-            ],
-            SELECT_REPORT_FOR_EDIT: [
-                # ВАЖНОЕ ИЗМЕНЕНИЕ: удаляем отсюда обработчик `admin_edit_`.
-                # Теперь он является точкой входа для нового `edit_report_conv`.
-                CallbackQueryHandler(admin_confirm_delete, pattern="^admin_delete_"),
-                CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
-            ],
-            CONFIRM_DELETE: [
-                CallbackQueryHandler(admin_execute_delete, pattern="^admin_delete_confirm_yes$"),
-                CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_")
-            ]
-        },
-        fallbacks=[
-            CallbackQueryHandler(cancel_admin_operation, pattern="^cancel_admin_op$"),
-            CommandHandler('start', start_over)
+        SELECT_BRIGADE_FOR_EDIT: [
+    
+            CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_"),
+            CallbackQueryHandler(admin_prompt_for_date, pattern="^admin_pick_date$"),
+            MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_date_input),
+            CallbackQueryHandler(admin_report_menu, pattern="^admin_report_menu_start$"),
+            CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
         ],
-        per_user=True
-    )
+        SELECT_REPORT_FOR_EDIT: [
+            CallbackQueryHandler(admin_confirm_delete, pattern="^admin_delete_"),
+            CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
+        ],
+        CONFIRM_DELETE: [
+            CallbackQueryHandler(admin_execute_delete, pattern="^admin_delete_confirm_yes$"),
+            CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_")
+        ]
+    },
+    fallbacks=[
+        CallbackQueryHandler(cancel_admin_operation, pattern="^cancel_admin_op$"),
+        CommandHandler('start', start_over)
+    ],
+    per_user=True
+)
 
     # Добавляем его в приложение
     application.add_handler(admin_report_conv)
