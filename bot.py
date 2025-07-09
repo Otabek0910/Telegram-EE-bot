@@ -888,9 +888,9 @@ async def start_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     # Если это админ/овнер, сначала спрашиваем дисциплину
     if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-        disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
-        if not disciplines:
-            await query.edit_message_text("⚠️ В базе данных нет дисциплин, невозможно создать отчет.")
+        success, disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
+        if not success or not disciplines:
+            await query.edit_message_text("⚠️ В базе данных нет дисциплин.")
             return ConversationHandler.END
 
         # Теперь переменная lang здесь определена, и get_data_translation сработает
@@ -918,9 +918,9 @@ async def show_corps_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
     user_id = str(update.effective_user.id)
     lang = get_user_language(user_id)
 
-    corps_list_raw = db_query("SELECT id, name FROM construction_objects ORDER BY display_order ASC, name ASC")
+    success, corps_list_raw = db_query("SELECT id, name FROM construction_objects ORDER BY display_order ASC, name ASC")
     
-    if not corps_list_raw:
+    if not success or not corps_list_raw:
         # Эту ошибку можно не переводить
         text = "⚠️ *Ошибка:* Не удалось найти ни одного корпуса в базе данных. Обратитесь к администратору."
         if message_id_to_edit:
@@ -1392,8 +1392,8 @@ async def report_overview_chart_prompt(update: Update, context: ContextTypes.DEF
     # --- ВОТ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ---
     # Если у пользователя полный доступ, показываем все дисциплины
     if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-        disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
-        if not disciplines:
+        success, disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
+        if not success or not disciplines:
             await query.edit_message_text("Ошибка: нет дисциплин для построения графика.")
             return
         
@@ -1476,9 +1476,9 @@ async def show_historical_report_menu(update: Update, context: ContextTypes.DEFA
             message.append("\n\n🗂️ *Выберите дисциплину для детального отчета:*")
             final_text = "\n".join(message)
 
-            disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
+            success, disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
             keyboard_buttons = []
-            if disciplines:
+            if success or disciplines:
                 # Получаем язык пользователя, чтобы перевести кнопки
                 lang = get_user_language(str(query.from_user.id))
                 for name, in disciplines:
@@ -2073,8 +2073,8 @@ async def admin_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
 
-    disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
-    if not disciplines:
+    success, disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
+    if not success or not disciplines:
         await query.edit_message_text("В системе нет дисциплин для управления отчетами.")
         return ConversationHandler.END
 
@@ -3779,8 +3779,8 @@ async def get_corpus_and_ask_work_type(update: Update, context: ContextTypes.DEF
     parts = query.data.split('_')
     selected_corps_id = parts[2] 
 
-    corps_name_raw = db_query("SELECT name FROM construction_objects WHERE id = %s", (selected_corps_id,))
-    if not corps_name_raw:
+    success, corps_name_raw = db_query("SELECT name FROM construction_objects WHERE id = %s", (selected_corps_id,))
+    if not success or not corps_name_raw:
         await query.edit_message_text(text="⚠️ *Ошибка:* Выбранный корпус не найден. Обратитесь к администратору.")
         return ConversationHandler.END
     selected_corps_name = corps_name_raw[0][0]
@@ -3813,14 +3813,14 @@ async def show_work_types_page(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text="⚠️ *Ошибка:* Не удалось определить вашу дисциплину. Обратитесь к администратору.", parse_mode='Markdown')
         return ConversationHandler.END
 
-    work_types_raw = db_query("""
+    success, work_types_raw = db_query("""
      SELECT wt.id, wt.name FROM work_types wt
      JOIN disciplines d ON wt.discipline_id = d.id
      WHERE d.name = %s
      ORDER BY wt.display_order, wt.name
      """, (discipline_name,))
 
-    if not work_types_raw:
+    if not success or not work_types_raw:
         text = get_text('report_error_no_work_types', lang).format(discipline=discipline_name)
         user_role_check = check_user_role(user_id)
         # Кнопка "Назад" для админа и обычного пользователя ведет в разные места
@@ -3897,8 +3897,8 @@ async def get_work_type_and_ask_count(update: Update, context: ContextTypes.DEFA
 
     selected_work_type_id = query.data.split('_')[2]
    
-    work_type_info_raw = db_query("SELECT name, unit_of_measure FROM work_types WHERE id = %s", (selected_work_type_id,))
-    if not work_type_info_raw:
+    success, work_type_info_raw = db_query("SELECT name, unit_of_measure FROM work_types WHERE id = %s", (selected_work_type_id,))
+    if not success or not work_type_info_raw:
         await query.edit_message_text(text="⚠️ *Ошибка:* Выбранный вид работ не найден.")
         return ConversationHandler.END
     
@@ -3943,17 +3943,17 @@ async def get_people_count_and_ask_volume(update: Update, context: ContextTypes.
         return GETTING_PEOPLE_COUNT
 
     today_str = date.today().strftime('%Y-%m-%d')
-    roster_info = db_query("SELECT total_people FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
+    success_roster, roster_info = db_query("SELECT total_people FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
     
-    if not roster_info:
+    if not success_roster or not roster_info:
         keyboard = [[InlineKeyboardButton(get_text('main_menu_title', lang), callback_data="go_back_to_main_menu")]]
         await context.bot.send_message(chat_id, get_text('report_error_no_roster', lang), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return ConversationHandler.END
 
     total_declared = roster_info[0][0]
     brigade_name_for_query = user_role.get('brigadeName') or f"Бригада пользователя {user_id}"
-    assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name_for_query, today_str))
-    total_assigned = assigned_info[0][0] or 0 if assigned_info else 0
+    success_assigned, assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name_for_query, today_str))
+    total_assigned = assigned_info[0][0] or 0 if success_assigned and assigned_info else 0
     available_pool = total_declared - total_assigned
     
     if people_count > available_pool:
@@ -4109,7 +4109,7 @@ async def submit_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     report_date_db = report_data.get('report_date_db')
     notes = report_data.get('notes')
 
-    report_id = db_query(
+    success_insert, report_id = db_query(
         """
         INSERT INTO reports (timestamp, corpus_name, discipline_name, work_type_name, foreman_name, people_count, volume, report_date, notes)
         VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
@@ -4117,21 +4117,21 @@ async def submit_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         (corpus_name, discipline_name, work_type_name, foreman_name, people_count, volume, report_date_db, notes)
     )
 
-    if not report_id:
+    if not success_insert or not report_id:
         await query.edit_message_text(get_text('report_error_db_save', lang), parse_mode="Markdown")
         return ConversationHandler.END
         
     logger.info(f"Создан отчет в БД с ID: {report_id}")
 
-    mapping = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name ILIKE %s", (discipline_name,))
+    success_map, mapping = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name ILIKE %s", (discipline_name,))
     
-    if mapping:
+    if success_map and mapping:
         chat_id, topic_id = mapping[0]
         
         # Текст отчета, который уходит в общую группу, оставляем на русском для единообразия
         report_date_display = datetime.strptime(report_date_db, "%Y-%m-%d").strftime("%d.%m.%Y")
-        unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (work_type_name,))
-        unit_of_measure = unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else ""
+        success_unit, unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (work_type_name,))
+        unit_of_measure = unit_of_measure_raw[0][0] if success_unit and unit_of_measure_raw and unit_of_measure_raw[0][0] else ""
 
         report_lines = [
             f"📄 *Новый отчет от бригадира: {foreman_name}* (ID: {report_id})\n",
@@ -4795,13 +4795,13 @@ async def handle_kiok_decision(update: Update, context: ContextTypes.DEFAULT_TYP
     user_role = check_user_role(user_id)
     
     # Запрашиваем всю информацию об отчете одним запросом
-    report_info_raw = db_query(
+    success, report_info_raw = db_query(
         "SELECT r.discipline_name, tm.chat_id, r.group_message_id, r.report_date, r.foreman_name, r.corpus_name, r.work_type_name, r.people_count, r.volume, r.notes "
         "FROM reports r LEFT JOIN topic_mappings tm ON r.discipline_name = tm.discipline_name WHERE r.id = %s",
         (report_id,)
     )
 
-    if not report_info_raw:
+    if not success or not report_info_raw:
         await query.answer("⚠️ Ошибка: отчет не найден. Возможно, он был удален.", show_alert=True)
         return
     
@@ -4839,9 +4839,9 @@ async def handle_kiok_decision(update: Update, context: ContextTypes.DEFAULT_TYP
         LIMIT 1;
     """
     params = (user_id, user_id, user_id, user_id)
-    user_data = db_query(approver_name_query, params)
+    success_user, user_data = db_query(approver_name_query, params)
 
-    if user_data and user_data[0]:
+    if success_user and user_data and user_data[0]:
         first_name, last_name = user_data[0]
         approver_name = f"{first_name or ''} {last_name or ''}".strip()
     else:
