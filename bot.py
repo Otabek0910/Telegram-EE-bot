@@ -201,13 +201,12 @@ def init_db():
     
 def db_query(query: str, params: tuple = ()):
     """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ:
-    Универсальная функция, которая теперь корректно работает и с текстовыми
-    запросами, и с форматированными объектами psycopg2.sql.
+    ФИНАЛЬНАЯ ВЕРСИЯ:
+    Всегда корректно возвращает кортеж (success, result).
     """
     if not DATABASE_URL:
-        logger.error("Переменная DATABASE_URL не определена в коде!")
-        return None
+        logger.error("Переменная DATABASE_URL не определена!")
+        return (False, "DATABASE_URL not set")
     
     result = None
     conn = None
@@ -216,8 +215,7 @@ def db_query(query: str, params: tuple = ()):
         cursor = conn.cursor()
         cursor.execute(query, params)
 
-        # --- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ---
-        # Проверяем, является ли запрос текстовой строкой, прежде чем его обрабатывать
+        # Проверяем, нужно ли получать данные
         is_select_query = False
         is_returning_query = False
         if isinstance(query, str):
@@ -231,18 +229,27 @@ def db_query(query: str, params: tuple = ()):
             result = cursor.fetchall()
         elif is_returning_query:
             result = cursor.fetchone()[0]
-        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
         
         conn.commit()
         cursor.close()
+        # Возвращаем кортеж УСПЕХА
+        return (True, result)
+
     except Exception as e:
-        # Логируем ошибку вместе с самим запросом для удобной отладки
-        logger.error(f"Ошибка базы данных PostgreSQL: {e}\nЗапрос: {query}\nПараметры: {params}")
+        error_text = f"Ошибка БД: {e}"
+        # Для отладки можно раскомментировать, чтобы видеть полный запрос
+        # if isinstance(query, str):
+        #     error_text += f"\nЗапрос: {query}"
+        # elif conn: # Попытка отобразить Composed object
+        #     try: error_text += f"\nЗапрос: {query.as_string(conn)}"
+        #     except: pass
+        
+        logger.error(error_text)
         if conn: conn.rollback()
-        return None
+        # Возвращаем кортеж НЕУДАЧИ
+        return (False, str(e))
     finally:
         if conn: conn.close()
-    return result
 
 def ensure_dirs_exist():
     """Проверяет и создает необходимые директории для файлов."""
