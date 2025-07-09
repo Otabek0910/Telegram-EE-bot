@@ -1818,9 +1818,8 @@ async def manage_users_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         roles = ['admins', 'managers', 'brigades', 'pto', 'kiok']
         for role in roles:
             # Более надежный способ подсчета
-            result = db_query(f"SELECT COUNT(*) FROM {role}")
-            counts[role] = result[0][0] if result else 0
-        
+            success, result = db_query(f"SELECT COUNT(*) FROM {role}")
+            counts[role] = result[0][0] if success and result else 0
         summary_text = (
             f"📊 *Сводка по ролям:*\n"
             f"  ▪️ Администраторы: *{counts['admins']}*\n"
@@ -1873,9 +1872,8 @@ async def link_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     discipline_name_input = " ".join(context.args).strip()
     
     # Ищем каноничное название дисциплины в БД без учета регистра, используя ILIKE для PostgreSQL
-    discipline_row = db_query("SELECT name FROM disciplines WHERE name ILIKE %s", (discipline_name_input,))
-    
-    if not discipline_row:
+    success, discipline_row = db_query("SELECT name FROM disciplines WHERE name ILIKE %s", (discipline_name_input,))
+    if not success or not discipline_row:
         await update.message.reply_text(f"❗ Ошибка: Дисциплина «{discipline_name_input}» не найдена в справочнике.")
         return
     
@@ -1897,13 +1895,13 @@ async def link_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(f"✅ Тема успешно привязана к дисциплине «{canonical_discipline_name}». Ищу неотправленные отчеты...")
     
     # Ищем неотправленные отчеты
-    unsent_reports = db_query(
+    success, unsent_reports = db_query(
         "SELECT * FROM reports WHERE discipline_name = %s AND group_message_id IS NULL",
         (canonical_discipline_name,)
     )
     
     sent_count = 0
-    if unsent_reports:
+    if success and unsent_reports:
         for report_tuple in unsent_reports:
             # Распаковываем кортеж. Убедись, что порядок полей соответствует твоей таблице reports
             (report_id, _, corpus_name, discipline_db, work_type_name, foreman_name, 
@@ -1973,7 +1971,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = []
     if table_name == 'admins':
         query_sql = f"SELECT user_id, first_name, last_name, phone_number, NULL as discipline_name FROM {table_name} ORDER BY first_name, last_name LIMIT %s OFFSET %s"
-        users = db_query(query_sql, (USERS_PER_PAGE, offset))
+        success, users = db_query(query_sql, (USERS_PER_PAGE, offset))
     else:
         query_sql = f"""
             SELECT u.user_id, u.first_name, u.last_name, u.phone_number, d.name as discipline_name
@@ -1984,8 +1982,8 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         users = db_query(query_sql, (USERS_PER_PAGE, offset))
 
-    total_users_raw = db_query(f"SELECT COUNT(*) FROM {table_name}")
-    total_users = total_users_raw[0][0] if total_users_raw else 0
+    success, total_users_raw = db_query(f"SELECT COUNT(*) FROM {table_name}")
+    total_users = total_users_raw[0][0] if success and total_users_raw else 0
     total_pages = math.ceil(total_users / USERS_PER_PAGE) if total_users > 0 else 1
 
     message = f"📜 *Список: {table_info['title']}* (Страница {current_page} из {total_pages})\n\n"
@@ -2807,8 +2805,8 @@ async def handle_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_info['pending_message_ids'] = [text_message.message_id, emoji_message.message_id]
     context.bot_data[user_id_str] = user_info
     
-    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
-    discipline_name_for_text = discipline_name_raw[0][0] if discipline_name_raw else "ID: " + str(discipline_id)
+    success, discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
+    discipline_name_for_text = discipline_name_raw[0][0] if success and discipline_name_raw else "ID: " + str(discipline_id)
 
     role_rus_map = {'manager': 'Руководителя (Ур. 2)', 'foreman': 'Бригадира', 'pto': 'ПТО', 'kiok': 'КИОК'}
     role_rus = role_rus_map.get(role, 'Неизвестно')
@@ -3522,8 +3520,8 @@ async def show_user_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     viewer_id = str(query.from_user.id)
     viewer_role = check_user_role(viewer_id)
     
-    user_data = db_query(f"SELECT first_name, last_name FROM {role} WHERE user_id = %s", (user_id_to_edit,))
-    full_name = f"{user_data[0][0]} {user_data[0][1]}" if user_data else user_id_to_edit
+    success, user_data = db_query(f"SELECT first_name, last_name FROM {role} WHERE user_id = %s", (user_id_to_edit,))
+    full_name = f"{user_data[0][0]} {user_data[0][1]}" if success and user_data else user_id_to_edit
 
     message_text = f"👤 *Редактирование: {full_name}*\n`{user_id_to_edit}`\n\nВыберите действие:"
 
@@ -3563,9 +3561,9 @@ async def show_discipline_change_menu(update: Update, context: ContextTypes.DEFA
     role, user_id_to_edit = parts[2], parts[3]
     
     # 2. Получаем список всех дисциплин из БД
-    disciplines_list = db_query("SELECT id, name FROM disciplines")
+    success, disciplines_list = db_query("SELECT id, name FROM disciplines")
     
-    if not disciplines_list:
+    if not success or not disciplines_list:
         await query.edit_message_text("⚠️ В базе данных не найдено ни одной дисциплины.")
         return
 
@@ -3635,8 +3633,8 @@ async def set_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     elif new_level == 2:
         context.user_data['edit_user_id'] = user_id_to_edit
-        disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
-        if not disciplines:
+        success, disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
+        if not success or not disciplines:
             await query.edit_message_text("Ошибка: нет дисциплин для назначения.")
             return ConversationHandler.END
         
