@@ -26,6 +26,7 @@ from telegram.helpers import escape_markdown
 from sqlalchemy import create_engine, text
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.helpers import escape_markdown
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -199,8 +200,11 @@ def init_db():
             conn.close()
     
 def db_query(query: str, params: tuple = ()):
-    """Универсальная функция для выполнения запросов к PostgreSQL."""
-    # Используем глобальную переменную DATABASE_URL
+    """
+    ИСПРАВЛЕННАЯ ВЕРСИЯ:
+    Универсальная функция, которая теперь корректно работает и с текстовыми
+    запросами, и с форматированными объектами psycopg2.sql.
+    """
     if not DATABASE_URL:
         logger.error("Переменная DATABASE_URL не определена в коде!")
         return None
@@ -212,15 +216,28 @@ def db_query(query: str, params: tuple = ()):
         cursor = conn.cursor()
         cursor.execute(query, params)
 
-        if query.strip().upper().startswith("SELECT"):
+        # --- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ---
+        # Проверяем, является ли запрос текстовой строкой, прежде чем его обрабатывать
+        is_select_query = False
+        is_returning_query = False
+        if isinstance(query, str):
+            query_upper = query.strip().upper()
+            if query_upper.startswith("SELECT"):
+                is_select_query = True
+            elif "RETURNING" in query_upper:
+                is_returning_query = True
+        
+        if is_select_query:
             result = cursor.fetchall()
-        elif "RETURNING" in query.upper():
+        elif is_returning_query:
             result = cursor.fetchone()[0]
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
         
         conn.commit()
         cursor.close()
     except Exception as e:
-        logger.error(f"Ошибка базы данных PostgreSQL: {e}")
+        # Логируем ошибку вместе с самим запросом для удобной отладки
+        logger.error(f"Ошибка базы данных PostgreSQL: {e}\nЗапрос: {query}\nПараметры: {params}")
         if conn: conn.rollback()
         return None
     finally:
@@ -2287,9 +2304,9 @@ async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ФИНАЛЬНАЯ ВЕРСИЯ:
-    Сохраняет все изменения в БД и обновляет сообщение в группе, используя
-    безопасную маркировку эмодзи.
+    ФИНАЛЬНАЯ ЗАЩИЩЕННАЯ ВЕРСИЯ:
+    Сохраняет изменения и отправляет сообщение, экранируя все
+    пользовательские данные для безопасной Markdown-разметки.
     """
     query = update.callback_query
     await query.answer()
@@ -2300,7 +2317,6 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     report_id = report_data['id']
 
     if not changed_fields:
-        # Возвращаем пользователя в меню просмотра отчетов бригады
         await query.edit_message_text("Вы ничего не изменили. Сохранение отменено.", 
                                       reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"admin_brig_{context.user_data['admin_edit_brigade_id']}")]])
                                      )
@@ -2309,41 +2325,45 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await query.edit_message_text(f"⏳ Сохраняю изменения для отчета ID {report_id}...")
 
-    # 1. Сохраняем в БД (этот блок работает корректно)
+    # Шаг 1: Сохранение в БД
     update_query = sql.SQL("UPDATE reports SET {} WHERE id = %s").format(
         sql.SQL(', ').join(sql.SQL("{} = %s").format(sql.Identifier(key)) for key in changed_fields)
     )
     params = [report_data[key] for key in changed_fields] + [report_id]
     db_query(update_query, tuple(params))
     
-    # 2. Формируем новое, безопасное сообщение для группы
+    # Шаг 2: Формирование безопасного сообщения
     final_data_dict = dict(report_data)
     admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
-    admin_name = f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор"
     
-    unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
-    unit = unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else ""
+    # --- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Экранирование всех данных ---
+    admin_name = escape_markdown(f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор", version=2)
+    foreman_name_safe = escape_markdown(final_data_dict['foreman_name'], version=2)
+    corpus_name_safe = escape_markdown(final_data_dict['corpus_name'], version=2)
+    work_type_safe = escape_markdown(final_data_dict['work_type_name'], version=2)
+    notes_safe = escape_markdown(final_data_dict['notes'] or "", version=2)
 
-    # --- ВОТ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ---
+    unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
+    unit = escape_markdown(unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else "", version=2)
+
     def marker(field_name):
         return "✏️" if field_name in changed_fields else "▪️"
 
     report_lines = [
-        f"📄 *Отчет от бригадира: {final_data_dict['foreman_name']}* (ID: {report_id})\n",
-        f"{marker('corpus_name')} *Корпус:* {final_data_dict['corpus_name']}",
-        f"{marker('work_type_name')} *Вид работ:* {final_data_dict['work_type_name']}",
+        f"📄 *Отчет от бригадира: {foreman_name_safe}* (ID: {report_id})\n",
+        f"{marker('corpus_name')} *Корпус:* {corpus_name_safe}",
+        f"{marker('work_type_name')} *Вид работ:* {work_type_safe}",
         f"{marker('report_date')} *Дата:* {final_data_dict['report_date'].strftime('%d.%m.%Y')}",
         f"{marker('people_count')} *Кол-во человек:* {final_data_dict['people_count']}",
         f"{marker('volume')} *Объем:* {final_data_dict['volume']} {unit}",
     ]
+    if notes_safe:
+        report_lines.append(f"{marker('notes')} *Примечание:* {notes_safe}")
     # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-
-    if final_data_dict['notes']:
-        report_lines.append(f"{marker('notes')} *Примечание:* {final_data_dict['notes']}")
 
     status_map = {1: '✅ Согласовано', 0: '⏳ Ожидает', -1: '❌ Отклонено'}
     report_lines.append(f"\n*Статус:* {status_map.get(final_data_dict['kiok_approved'], 'Неизвестно')}")
-    report_lines.append(f"_{get_text('edited_by', get_user_language(admin_id))}: {admin_name}_")
+    report_lines.append(f"_{escape_markdown(get_text('edited_by', get_user_language(admin_id)), version=2)}: {admin_name}_")
     final_text = "\n".join(report_lines)
     
     topic_info = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name = %s", (final_data_dict['discipline_name'],))
@@ -2356,13 +2376,12 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     InlineKeyboardButton("✅ Согласовать", callback_data=f"kiok_approve_{report_id}"),
                     InlineKeyboardButton("❌ Отклонить", callback_data=f"kiok_reject_{report_id}")
                 ]])
-
             await context.bot.edit_message_text(
                 chat_id=chat_id, message_id=final_data_dict['group_message_id'],
-                text=final_text, parse_mode="Markdown", reply_markup=original_buttons
+                text=final_text, parse_mode='MarkdownV2', reply_markup=original_buttons # Используем MarkdownV2 для большей надежности
             )
         except Exception as e:
-            logger.error(f"Не удалось обновить сообщение в группе: {e}")
+            logger.error(f"Не удалось обновить сообщение в группе: {e}\nТекст: {final_text}")
 
     await query.edit_message_text(f"✅ Отчет ID {report_id} успешно сохранен!")
     
