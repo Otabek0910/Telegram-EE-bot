@@ -2355,45 +2355,63 @@ async def prompt_for_new_value(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    НОВАЯ ВЕРСИЯ: Обрабатывает новое значение.
-    Умеет обрабатывать и текст, и нажатие на кнопку (для смены дисциплины).
+    ИСПРАВЛЕННАЯ ВЕРСИЯ:
+    Корректно обрабатывает все типы данных и проверяет лимит по людям.
     """
     field = context.user_data.get('field_to_edit')
     report_data = context.user_data.get('edit_report_data')
 
-    # Определяем, пришел текст или нажатие на кнопку
-    if update.callback_query: # Пришло нажатие кнопки (для дисциплины)
+    if update.callback_query:
         query = update.callback_query
         await query.answer()
         new_value = query.data.split('set_new_value_')[-1]
         report_data[field] = new_value
-    else: # Пришел текст
+    else:
         new_value = update.message.text
-        try: # Валидация для разных типов данных
+        try:
             if field == 'people_count':
-                report_data[field] = int(new_value)
+                # --- НАЧАЛО ВАЛИДАЦИИ КОЛИЧЕСТВА ЧЕЛОВЕК ---
+                requested_count = int(new_value)
+                if requested_count <= 0: raise ValueError("Count must be positive.")
+
+                # Получаем данные для проверки
+                user_id = context.user_data['admin_edit_brigade_id']
+                report_date_str = report_data['report_date'].strftime('%Y-%m-%d')
+                
+                roster_info = db_query("SELECT total_people FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, report_date_str))
+                total_declared = roster_info[0][0] if roster_info else 0
+                
+                # Считаем уже назначенных, ИСКЛЮЧАЯ текущий редактируемый отчет
+                assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s AND id != %s", (report_data['foreman_name'], report_date_str, report_data['id']))
+                total_assigned_others = assigned_info[0][0] or 0 if assigned_info else 0
+                
+                available_pool = total_declared - total_assigned_others
+                
+                if requested_count > available_pool:
+                    await update.message.reply_text(f"❗️Ошибка: Превышен лимит. Доступно для назначения: {available_pool} чел.",)
+                    return AWAITING_NEW_VALUE # Остаемся ждать корректного ввода
+                
+                report_data[field] = requested_count
+                # --- КОНЕЦ ВАЛИДАЦИИ ---
             elif field == 'volume':
                 report_data[field] = float(new_value.replace(',', '.'))
             elif field == 'report_date':
                 report_data[field] = datetime.strptime(new_value, "%d.%m.%Y").date()
-            else: # Для текстовых полей (корпус, вид работ, примечание)
+            else:
                 report_data[field] = new_value
         except ValueError:
             await update.message.reply_text("❗️ Неверный формат данных. Попробуйте еще раз.")
             return AWAITING_NEW_VALUE
         await update.message.delete()
-        
-    # Помечаем поле как измененное
+
     context.user_data['changed_fields'].add(field)
-            
-    # Возвращаемся в главное меню редактирования
     await display_edit_menu(update, context)
     return SELECT_FIELD_TO_EDIT
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ФИНАЛЬНАЯ ВЕРСИЯ:
-    Включает все исправления по тексту, формату и навигации.
+    ИСПРАВЛЕННАЯ ВЕРСИЯ:
+    Включает кнопку "назад" и использует финальную логику формирования текста.
     """
     query = update.callback_query
     await query.answer()
@@ -2404,11 +2422,10 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     report_id = report_data['id']
 
     if not changed_fields:
-        await query.edit_message_text("Вы ничего не изменили. Сохранение отменено.", 
-                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ К отчетам бригады", callback_data=f"admin_brig_{context.user_data['admin_edit_brigade_id']}")]])
-                                     )
-        context.user_data.clear()
-        return ConversationHandler.END
+        keyboard_back = [[InlineKeyboardButton("◀️ К отчетам бригады", callback_data=f"admin_brig_{context.user_data['admin_edit_brigade_id']}")]]
+        await query.edit_message_text("Вы ничего не изменили. Сохранение отменено.", reply_markup=InlineKeyboardMarkup(keyboard_back))
+        # Не завершаем диалог, а возвращаемся к списку отчетов
+        return SELECT_REPORT_FOR_EDIT
 
     await query.edit_message_text(f"⏳ Сохраняю изменения для отчета ID {report_id}...")
 
@@ -2423,80 +2440,69 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     final_data_dict = dict(report_data)
     admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
     
-    def safe_escape(text):
-        return escape_markdown(str(text), version=2)
+    def safe_escape(text): return escape_markdown(str(text), version=2)
 
     admin_name = safe_escape(f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор")
     foreman_name_safe = safe_escape(final_data_dict['foreman_name'])
     corpus_name_safe = safe_escape(final_data_dict['corpus_name'])
-    discipline_name_safe = safe_escape(final_data_dict['discipline_name']) # <-- Добавлено
+    discipline_name_safe = safe_escape(final_data_dict['discipline_name'])
     work_type_safe = safe_escape(final_data_dict['work_type_name'])
     notes_safe = safe_escape(final_data_dict['notes'] or "")
     unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
-    unit = safe_escape(unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else "")
+    unit = safe_escape(unit_of_measure_raw[0][0] if unit_of_measure_raw else "")
     
     date_str_safe = safe_escape(final_data_dict['report_date'].strftime('%d.%m.%Y'))
     volume_str_safe = safe_escape(final_data_dict['volume'])
-    people_count_safe = final_data_dict['people_count']
-
+    
     report_lines = [
         f"📄 *Отчет от бригадира: {foreman_name_safe}* \\(ID: {report_id}\\)\n",
-        f"▪️ *Корпус:* {corpus_name_safe}",
-        f"▪️ *Дисциплина:* {discipline_name_safe}", # <-- Добавлено
-        f"▪️ *Вид работ:* {work_type_safe}",
-        f"▪️ *Дата:* {date_str_safe}",
-        f"▪️ *Кол\\-во человек:* {people_count_safe}",
-        f"▪️ *Выполненный объем:* {volume_str_safe} {unit}", # <-- Исправлен текст
+        f"▪️ *Корпус:* {corpus_name_safe}", f"▪️ *Дисциплина:* {discipline_name_safe}",
+        f"▪️ *Вид работ:* {work_type_safe}", f"▪️ *Дата:* {date_str_safe}",
+        f"▪️ *Кол\\-во человек:* {final_data_dict['people_count']}",
+        f"▪️ *Выполненный объем:* {volume_str_safe} {unit}",
     ]
-    if notes_safe.strip():
-        report_lines.append(f"▪️ *Примечание:* {notes_safe}")
+    if notes_safe.strip(): report_lines.append(f"▪️ *Примечание:* {notes_safe}")
 
     status_map = {1: '✅ Согласовано', 0: '⏳ Ожидает', -1: '❌ Отклонено'}
     status_text_safe = safe_escape(status_map.get(final_data_dict['kiok_approved'], 'Неизвестно'))
-    
-    # Новый формат подписи
     edit_time = datetime.now(pytz.timezone('Asia/Tashkent')).strftime('%d.%m.%Y в %H:%M')
     footer = f"Отредактировал: {admin_name} \\({safe_escape(edit_time)}\\)"
-
     report_lines.extend(["", f"*Статус:* {status_text_safe}", "---", f"_{footer}_"])
     final_text = "\n".join(report_lines)
     
-    # Отправка в группу (остальной код без изменений)
     topic_info = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name = %s", (final_data_dict['discipline_name'],))
-    if topic_info and final_data_dict['group_message_id']:
+    if topic_info and final_data_dict.get('group_message_id'):
         chat_id, topic_id = topic_info[0]
         try:
             original_buttons = None
             if final_data_dict['kiok_approved'] == 0:
-                 original_buttons = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("✅ Согласовать", callback_data=f"kiok_approve_{report_id}"),
-                    InlineKeyboardButton("❌ Отклонить", callback_data=f"kiok_reject_{report_id}")
-                ]])
+                 original_buttons = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Согласовать", callback_data=f"kiok_approve_{report_id}")],
+                    [InlineKeyboardButton("❌ Отклонить", callback_data=f"kiok_reject_{report_id}")]])
             await context.bot.edit_message_text(
                 chat_id=chat_id, message_id=final_data_dict['group_message_id'],
                 text=final_text, parse_mode='MarkdownV2', reply_markup=original_buttons
             )
-        except Exception as e:
-            logger.error(f"Не удалось обновить сообщение в группе: {e}\nТекст: {final_text}")
+        except Exception as e: logger.error(f"Не удалось обновить сообщение в группе: {e}")
 
-    # Финальное сообщение с кнопкой "Назад"
     keyboard_back = [[InlineKeyboardButton("◀️ К отчетам бригады", callback_data=f"admin_brig_{context.user_data['admin_edit_brigade_id']}")]]
     await query.edit_message_text(f"✅ Отчет ID {report_id} успешно сохранен!", reply_markup=InlineKeyboardMarkup(keyboard_back))
     
-    context.user_data.clear()
-    return ConversationHandler.END
+    context.user_data.pop('edit_report_data', None)
+    context.user_data.pop('changed_fields', None)
+    
+    return SELECT_REPORT_FOR_EDIT # Возвращаемся к списку отчетов
 
 async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Отменяет редактирование и возвращает к списку отчетов.
-    """
+    """Отменяет редактирование и возвращает к списку отчетов бригады."""
     query = update.callback_query
     await query.answer()
     
-    # Возвращаемся к списку отчетов бригады
-    await query.edit_message_text("Редактирование отменено.")
-    context.user_data.clear()
-    return ConversationHandler.END
+    context.user_data.pop('edit_report_data', None)
+    context.user_data.pop('changed_fields', None)
+    
+    # Просто вызываем функцию, которая показывает список отчетов
+    return await admin_show_reports_for_brigade(update, context, date.today())
 
 async def display_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -5076,59 +5082,58 @@ def main() -> None:
     fallbacks=[CallbackQueryHandler(cancel_admin_action, pattern="^cancel_admin_action$")],
     per_user=True
 )
-    admin_report_conv = ConversationHandler(
-    entry_points=[
-        CallbackQueryHandler(admin_report_menu, pattern="^admin_report_menu_start$")
-    ],
-    states={
-        SELECT_DISC_FOR_EDIT: [
-            CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
+    admin_management_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(admin_report_menu, pattern="^admin_report_menu_start$")
         ],
-        SELECT_BRIGADE_FOR_EDIT: [
-    
-            CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_"),
-            CallbackQueryHandler(admin_prompt_for_date, pattern="^admin_pick_date$"),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_date_input),
-            CallbackQueryHandler(admin_report_menu, pattern="^admin_report_menu_start$"),
-            CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
-        ],
-        SELECT_REPORT_FOR_EDIT: [
-            CallbackQueryHandler(admin_confirm_delete, pattern="^admin_delete_"),
-            CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
-        ],
-        CONFIRM_DELETE: [
-            CallbackQueryHandler(admin_execute_delete, pattern="^admin_delete_confirm_yes$"),
-            CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_")
-        ]
-    },
-    fallbacks=[
-        CallbackQueryHandler(cancel_admin_operation, pattern="^cancel_admin_op$"),
-        CommandHandler('start', start_over)
-    ],
-    per_user=True
-)
-
-    # Добавляем его в приложение
-    application.add_handler(admin_report_conv)
-    
-    edit_report_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_report_edit, pattern="^admin_edit_")],
         states={
+            # Шаг 1: Выбор дисциплины
+            SELECT_DISC_FOR_EDIT: [
+                CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
+            ],
+            # Шаг 2: Выбор бригады (с пагинацией)
+            SELECT_BRIGADE_FOR_EDIT: [
+                CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_"),
+                CallbackQueryHandler(admin_prompt_for_date, pattern="^admin_pick_date$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_date_input),
+                CallbackQueryHandler(admin_report_menu, pattern="^admin_report_menu_start$"),
+                # Пагинация списка бригад
+                CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
+            ],
+            # Шаг 3: Просмотр отчетов бригады и выбор действия
+            SELECT_REPORT_FOR_EDIT: [
+                CallbackQueryHandler(admin_confirm_delete, pattern="^admin_delete_"),
+                CallbackQueryHandler(start_report_edit, pattern="^admin_edit_"), # <--- Вход в редактирование
+                # Возврат к выбору бригады
+                CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
+            ],
+            # Шаг 3.1: Подтверждение удаления
+            CONFIRM_DELETE: [
+                CallbackQueryHandler(admin_execute_delete, pattern="^admin_delete_confirm_yes$"),
+                CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_") # Отмена удаления
+            ],
+            # Шаг 4 (Редактирование): Выбор поля для редактирования
             SELECT_FIELD_TO_EDIT: [
                 CallbackQueryHandler(prompt_for_new_value, pattern="^edit_field_"),
                 CallbackQueryHandler(save_edited_report, pattern="^edit_save$"),
+                CallbackQueryHandler(cancel_edit, pattern="^edit_cancel$") # Отмена редактирования
             ],
+            # Шаг 5 (Редактирование): Ожидание нового значения
             AWAITING_NEW_VALUE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_new_value)
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_new_value),
+                # Обработка выбора дисциплины из кнопок
+                CallbackQueryHandler(process_new_value, pattern="^set_new_value_")
             ]
         },
-        fallbacks=[CallbackQueryHandler(cancel_edit, pattern="^edit_cancel$")],
+        fallbacks=[
+            CallbackQueryHandler(cancel_admin_operation, pattern="^cancel_admin_op$"),
+            CommandHandler('start', start_over)
+        ],
         per_user=True,
-        # Важно, чтобы этот диалог мог быть прерван другим
-        allow_reentry=True 
+        allow_reentry=True
     )
-
-    application.add_handler(edit_report_conv)
+    # Добавляем новый единый обработчик в приложение
+    application.add_handler(admin_management_conv)
 
     # === КОНЕЦ ИЗМЕНЕНИЙ ===
 
