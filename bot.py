@@ -2380,8 +2380,8 @@ async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ:
-    Корректно экранирует все символы для MarkdownV2.
+    ОКОНЧАТЕЛЬНО ИСПРАВЛЕННАЯ ВЕРСИЯ:
+    Исправлена синтаксическая ошибка в f-строке для даты.
     """
     query = update.callback_query
     await query.answer()
@@ -2411,8 +2411,6 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     final_data_dict = dict(report_data)
     admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
     
-    # --- ЭКРАНИРОВАНИЕ ДАННЫХ ---
-    # Применяем escape_markdown ко всем текстовым данным, которые могут содержать спецсимволы
     admin_name = escape_markdown(f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор", version=2)
     foreman_name_safe = escape_markdown(final_data_dict['foreman_name'], version=2)
     corpus_name_safe = escape_markdown(final_data_dict['corpus_name'], version=2)
@@ -2425,21 +2423,25 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     def marker(field_name):
         return "✏️" if field_name in changed_fields else "▪️"
 
-    # --- ФОРМИРОВАНИЕ ТЕКСТА С УЧЕТОМ ЭКРАНИРОВАНИЯ ---
-    # Экранируем скобки и другие символы прямо в строке
+    # --- ВОТ ИСПРАВЛЕННЫЙ КОД ---
     report_lines = [
-        f"📄 *Отчет от бригадира: {foreman_name_safe}* \(ID: {report_id}\)\n",
+        f"📄 *Отчет от бригадира: {foreman_name_safe}* \\(ID: {report_id}\\)\n",
         f"{marker('corpus_name')} *Корпус:* {corpus_name_safe}",
         f"{marker('work_type_name')} *Вид работ:* {work_type_safe}",
-        f"{marker('report_date')} *Дата:* {final_data_dict['report_date'].strftime('%d.%m.%Y')}".replace('.', r'\.'),
+        # Правильное экранирование точек внутри f-строки
+        f"{marker('report_date')} *Дата:* {final_data_dict['report_date'].strftime('%d\\.%m\\.%Y')}",
         f"{marker('people_count')} *Кол-во человек:* {final_data_dict['people_count']}",
-        f"{marker('volume')} *Объем:* {str(final_data_dict['volume']).replace('.', r'\.')} {unit}",
+        # str(float) -> '123.45', .replace() экранирует точку
+        f"{marker('volume')} *Объем:* {str(final_data_dict['volume']).replace('.', r'\\.')} {unit}",
     ]
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
     if notes_safe:
         report_lines.append(f"{marker('notes')} *Примечание:* {notes_safe}")
 
     status_map = {1: '✅ Согласовано', 0: '⏳ Ожидает', -1: '❌ Отклонено'}
-    report_lines.append(f"\n*Статус:* {escape_markdown(status_map.get(final_data_dict['kiok_approved'], 'Неизвестно'), version=2)}")
+    status_text_safe = escape_markdown(status_map.get(final_data_dict['kiok_approved'], 'Неизвестно'), version=2)
+    report_lines.append(f"\n*Статус:* {status_text_safe}")
     report_lines.append(f"_{edited_by_text}: {admin_name}_")
     final_text = "\n".join(report_lines)
     
