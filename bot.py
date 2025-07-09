@@ -256,7 +256,7 @@ def ensure_dirs_exist():
     logger.info(f"Проверены и созданы директории: {TEMP_DIR}/ и {DASHBOARD_DIR}/")
 
 def check_user_role(user_id: str) -> dict:
-    """Проверяет все таблицы ролей и возвращает подробный объект с правами (PostgreSQL-совместимая версия)."""
+    """Проверяет все таблицы ролей и возвращает подробный объект с правами (исправленная версия)."""
     role_info = {
         'isAdmin': False, 'isManager': False, 'managerLevel': None,
         'isForeman': False, 'isPto': False, 'isKiok': False,
@@ -267,37 +267,37 @@ def check_user_role(user_id: str) -> dict:
         role_info.update({'isAdmin': True, 'isManager': True, 'managerLevel': 1})
         return role_info
 
-    # В запросах сразу соединяем (JOIN) с таблицей дисциплин, чтобы получить имя
-    admin_check = db_query("SELECT phone_number FROM admins WHERE user_id = %s", (user_id,))
-    if admin_check:
+    # ИСПРАВЛЕНО: Распаковываем ответ от db_query для каждой проверки
+    success, admin_check = db_query("SELECT phone_number FROM admins WHERE user_id = %s", (user_id,))
+    if success and admin_check:
         role_info['isAdmin'] = True
         if not role_info['phoneNumber']: role_info['phoneNumber'] = admin_check[0][0]
 
-    manager_check = db_query("SELECT m.level, d.name, m.phone_number FROM managers m LEFT JOIN disciplines d ON m.discipline = d.id WHERE m.user_id = %s", (user_id,))
-    if manager_check:
+    success, manager_check = db_query("SELECT m.level, d.name, m.phone_number FROM managers m LEFT JOIN disciplines d ON m.discipline = d.id WHERE m.user_id = %s", (user_id,))
+    if success and manager_check:
         role_info['isManager'] = True
         level, discipline_name, phone = manager_check[0]
         role_info['managerLevel'] = level
         if not role_info['discipline']: role_info['discipline'] = discipline_name
         if not role_info['phoneNumber']: role_info['phoneNumber'] = phone
     
-    brigade_check = db_query("SELECT b.brigade_name, d.name, b.phone_number FROM brigades b LEFT JOIN disciplines d ON b.discipline = d.id WHERE b.user_id = %s", (user_id,))
-    if brigade_check:
+    success, brigade_check = db_query("SELECT b.brigade_name, d.name, b.phone_number FROM brigades b LEFT JOIN disciplines d ON b.discipline = d.id WHERE b.user_id = %s", (user_id,))
+    if success and brigade_check:
         role_info['isForeman'] = True
         brigade_name, discipline_name, phone = brigade_check[0]
         role_info['brigadeName'] = brigade_name
         if not role_info['discipline']: role_info['discipline'] = discipline_name
         if not role_info['phoneNumber']: role_info['phoneNumber'] = phone
         
-    pto_check = db_query("SELECT d.name, p.phone_number FROM pto p LEFT JOIN disciplines d ON p.discipline = d.id WHERE p.user_id = %s", (user_id,))
-    if pto_check:
+    success, pto_check = db_query("SELECT d.name, p.phone_number FROM pto p LEFT JOIN disciplines d ON p.discipline = d.id WHERE p.user_id = %s", (user_id,))
+    if success and pto_check:
         role_info['isPto'] = True
         discipline_name, phone = pto_check[0]
         if not role_info['discipline']: role_info['discipline'] = discipline_name
         if not role_info['phoneNumber']: role_info['phoneNumber'] = phone
         
-    kiok_check = db_query("SELECT d.name, k.phone_number FROM kiok k LEFT JOIN disciplines d ON k.discipline = d.id WHERE k.user_id = %s", (user_id,))
-    if kiok_check:
+    success, kiok_check = db_query("SELECT d.name, k.phone_number FROM kiok k LEFT JOIN disciplines d ON k.discipline = d.id WHERE k.user_id = %s", (user_id,))
+    if success and kiok_check:
         role_info['isKiok'] = True
         discipline_name, phone = kiok_check[0]
         if not role_info['discipline']: role_info['discipline'] = discipline_name
@@ -392,10 +392,10 @@ async def send_approval_request(context: ContextTypes.DEFAULT_TYPE, user_id_str:
         [InlineKeyboardButton("❌ Отклонить", callback_data=reject_callback)]
     ]
 
-    admin_ids_raw = db_query("SELECT user_id FROM admins")
-    admin_ids = [row[0] for row in admin_ids_raw] if admin_ids_raw else []
-
-    # Добавляем OWNER_ID и убираем дубликаты
+    # ИСПРАВЛЕНО: Распаковываем ответ от db_query
+    success, admin_ids_raw = db_query("SELECT user_id FROM admins")
+    admin_ids = [row[0] for row in admin_ids_raw] if success and admin_ids_raw else []
+    
     all_approvers = list(set(admin_ids + [OWNER_ID]))
 
     for admin_id in all_approvers:
@@ -4895,25 +4895,15 @@ async def handle_kiok_decision(update: Update, context: ContextTypes.DEFAULT_TYP
 # --- ЛОКАЛИЗАЦИЯ ЯЗЫКОВ ---
 
 def get_user_language(user_id: str) -> str:
-    """Получает код языка пользователя с ОТЛАДКОЙ."""
-    user_id_str = str(user_id)
-    logger.info(f"[DEBUG] --- Начинаю поиск языка для {user_id_str} ---")
+    """Получает код языка пользователя (исправленная версия)."""
     tables = ['admins', 'managers', 'brigades', 'pto', 'kiok']
     for table in tables:
-        table_exists = db_query(f"SELECT to_regclass('public.{table}')")
-        if table_exists and table_exists[0][0]:
-            col_check = db_query(f"SELECT 1 FROM information_schema.columns WHERE table_name='{table}' AND column_name='language_code' LIMIT 1")
-            if col_check:
-                logger.info(f"[DEBUG] Проверяю таблицу {table} для {user_id_str}...")
-                lang_code_raw = db_query(f"SELECT language_code FROM {table} WHERE user_id = %s", (user_id_str,))
-                
-                # Проверяем, что запрос что-то вернул и значение не пустое
-                if lang_code_raw and lang_code_raw[0] and lang_code_raw[0][0]:
-                    found_lang = lang_code_raw[0][0]
-                    logger.info(f"[DEBUG] НАЙДЕН ЯЗЫК! В таблице {table} для {user_id_str} стоит '{found_lang}'. Возвращаю его.")
-                    return found_lang
-    
-    logger.info(f"[DEBUG] Язык не найден ни в одной таблице. Возвращаю 'ru' по умолчанию для {user_id_str}.")
+        # ИСПРАВЛЕНО: Распаковываем ответ от db_query
+        success_check, table_exists_data = db_query(f"SELECT to_regclass('public.{table}')")
+        if success_check and table_exists_data and table_exists_data[0][0]:
+            success_lang, lang_code_data = db_query(f"SELECT language_code FROM {table} WHERE user_id = %s", (str(user_id),))
+            if success_lang and lang_code_data and lang_code_data[0] and lang_code_data[0][0]:
+                return lang_code_data[0][0]
     return 'ru'
 def update_user_language(user_id: str, lang_code: str):
     """Обновляет язык пользователя с ОТЛАДКОЙ."""
