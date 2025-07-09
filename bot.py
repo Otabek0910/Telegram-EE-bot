@@ -199,16 +199,17 @@ def init_db():
         if conn:
             conn.close()
     
-def db_query(query: str, params: tuple = ()):
+def db_query(query, params=()):
     """
-    ФИНАЛЬНАЯ ВЕРСИЯ:
-    Всегда корректно возвращает кортеж (success, result).
+    ФИНАЛЬНАЯ НАДЕЖНАЯ ВЕРСЯ:
+    Гарантированно возвращает кортеж (успех, результат).
     """
     if not DATABASE_URL:
         logger.error("Переменная DATABASE_URL не определена!")
         return (False, "DATABASE_URL not set")
-    
-    result = None
+
+    success = False
+    data = None
     conn = None
     try:
         conn = psycopg2.connect(DATABASE_URL)
@@ -226,30 +227,26 @@ def db_query(query: str, params: tuple = ()):
                 is_returning_query = True
         
         if is_select_query:
-            result = cursor.fetchall()
+            data = cursor.fetchall()
         elif is_returning_query:
-            result = cursor.fetchone()[0]
-        
+            data = cursor.fetchone()[0]
+
         conn.commit()
-        cursor.close()
-        # Возвращаем кортеж УСПЕХА
-        return (True, result)
+        success = True
 
     except Exception as e:
         error_text = f"Ошибка БД: {e}"
-        # Для отладки можно раскомментировать, чтобы видеть полный запрос
-        # if isinstance(query, str):
-        #     error_text += f"\nЗапрос: {query}"
-        # elif conn: # Попытка отобразить Composed object
-        #     try: error_text += f"\nЗапрос: {query.as_string(conn)}"
-        #     except: pass
-        
         logger.error(error_text)
-        if conn: conn.rollback()
-        # Возвращаем кортеж НЕУДАЧИ
-        return (False, str(e))
+        if conn:
+            conn.rollback()
+        data = str(e) # В случае ошибки, возвращаем ее текст
+        success = False
+
     finally:
-        if conn: conn.close()
+        if conn:
+            conn.close()
+
+    return success, data
 
 def ensure_dirs_exist():
     """Проверяет и создает необходимые директории для файлов."""
