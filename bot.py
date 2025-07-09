@@ -1295,6 +1295,82 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         logger.error(f"Ошибка в show_overview_dashboard_menu: {e}")
         await query.edit_message_text(f"❗ *{get_text('error_generic', lang)}*")
 
+async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    НОВАЯ ФУНКЦИЯ:
+    Генерирует и отправляет столбчатую диаграмму "План/Факт" для выбранной дисциплины.
+    """
+    query = update.callback_query
+    await query.answer()
+
+    user_id = str(query.from_user.id)
+    lang = get_user_language(user_id)
+
+    discipline_name = query.data.split('_', 3)[-1]
+
+    await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
+
+    try:
+        engine = create_engine(DATABASE_URL)
+        today_str = date.today().strftime('%Y-%m-%d')
+
+        # Запрос для получения данных по конкретной дисциплине
+        pd_query = """
+            SELECT r.work_type_name, r.people_count, r.volume, wt.norm_per_unit
+            FROM reports r
+            JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
+            WHERE r.report_date = :today AND r.discipline_name = :discipline
+        """
+        params = {'today': today_str, 'discipline': discipline_name}
+
+        with engine.connect() as connection:
+            df = pd.read_sql_query(text(pd_query), connection, params=params)
+
+        if df.empty or df['norm_per_unit'].isnull().all():
+            await query.edit_message_text(
+                f"*{get_text('chart_no_data_title', lang)}*\n\n_{get_text('chart_no_data_subtitle', lang).format(discipline=get_data_translation(discipline_name, lang))}_",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="report_overview")]]),
+                parse_mode="Markdown"
+            )
+            return
+
+        # Считаем план/факт
+        df['plan'] = df['people_count'] * df['norm_per_unit']
+        df_chart = df.groupby('work_type_name').agg(План=('plan', 'sum'), Факт=('volume', 'sum')).reset_index()
+
+        # Рисуем график
+        plt.style.use('seaborn-v0_8-darkgrid')
+        fig, ax = plt.subplots(figsize=(12, 7))
+
+        df_chart.plot(x='work_type_name', y=['План', 'Факт'], kind='bar', ax=ax, width=0.6)
+
+        ax.set_title(f"Выработка по дисциплине «{discipline_name}» за {date.today().strftime('%d.%m.%Y')}", fontsize=16)
+        ax.set_ylabel("Объем работ", fontsize=12)
+        ax.set_xlabel("")
+        plt.xticks(rotation=15, ha="right")
+        plt.tight_layout()
+
+        chart_path = os.path.join(DASHBOARD_DIR, f'chart_{user_id}.png')
+        plt.savefig(chart_path)
+        plt.close(fig)
+
+        # Отправляем картинку
+        with open(chart_path, 'rb') as chart_file:
+            await context.bot.send_photo(
+                chat_id=query.message.chat_id,
+                photo=chart_file,
+                caption=f"📈 *Анализ выработки для дисциплины «{discipline_name}»*",
+                parse_mode="Markdown"
+            )
+
+        await query.message.delete() # Удаляем сообщение "Пожалуйста, подождите..."
+
+    except Exception as e:
+        logger.error(f"Ошибка при создании графика: {e}")
+        await query.edit_message_text(f"❌ {get_text('error_generic', lang)}")
+    finally:
+        if 'chart_path' in locals() and os.path.exists(chart_path):
+            os.remove(chart_path)
 
 async def report_overview_chart_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -2304,9 +2380,8 @@ async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ФИНАЛЬНАЯ ЗАЩИЩЕННАЯ ВЕРСИЯ:
-    Сохраняет изменения и отправляет сообщение, экранируя все
-    пользовательские данные для безопасной Markdown-разметки.
+    ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ:
+    Корректно экранирует все символы для MarkdownV2.
     """
     query = update.callback_query
     await query.answer()
@@ -2336,34 +2411,36 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     final_data_dict = dict(report_data)
     admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
     
-    # --- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Экранирование всех данных ---
+    # --- ЭКРАНИРОВАНИЕ ДАННЫХ ---
+    # Применяем escape_markdown ко всем текстовым данным, которые могут содержать спецсимволы
     admin_name = escape_markdown(f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор", version=2)
     foreman_name_safe = escape_markdown(final_data_dict['foreman_name'], version=2)
     corpus_name_safe = escape_markdown(final_data_dict['corpus_name'], version=2)
     work_type_safe = escape_markdown(final_data_dict['work_type_name'], version=2)
     notes_safe = escape_markdown(final_data_dict['notes'] or "", version=2)
-
     unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
     unit = escape_markdown(unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else "", version=2)
-
+    edited_by_text = escape_markdown(get_text('edited_by', get_user_language(admin_id)), version=2)
+    
     def marker(field_name):
         return "✏️" if field_name in changed_fields else "▪️"
 
+    # --- ФОРМИРОВАНИЕ ТЕКСТА С УЧЕТОМ ЭКРАНИРОВАНИЯ ---
+    # Экранируем скобки и другие символы прямо в строке
     report_lines = [
-        f"📄 *Отчет от бригадира: {foreman_name_safe}* (ID: {report_id})\n",
+        f"📄 *Отчет от бригадира: {foreman_name_safe}* \(ID: {report_id}\)\n",
         f"{marker('corpus_name')} *Корпус:* {corpus_name_safe}",
         f"{marker('work_type_name')} *Вид работ:* {work_type_safe}",
-        f"{marker('report_date')} *Дата:* {final_data_dict['report_date'].strftime('%d.%m.%Y')}",
+        f"{marker('report_date')} *Дата:* {final_data_dict['report_date'].strftime('%d.%m.%Y')}".replace('.', r'\.'),
         f"{marker('people_count')} *Кол-во человек:* {final_data_dict['people_count']}",
-        f"{marker('volume')} *Объем:* {final_data_dict['volume']} {unit}",
+        f"{marker('volume')} *Объем:* {str(final_data_dict['volume']).replace('.', r'\.')} {unit}",
     ]
     if notes_safe:
         report_lines.append(f"{marker('notes')} *Примечание:* {notes_safe}")
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
     status_map = {1: '✅ Согласовано', 0: '⏳ Ожидает', -1: '❌ Отклонено'}
-    report_lines.append(f"\n*Статус:* {status_map.get(final_data_dict['kiok_approved'], 'Неизвестно')}")
-    report_lines.append(f"_{escape_markdown(get_text('edited_by', get_user_language(admin_id)), version=2)}: {admin_name}_")
+    report_lines.append(f"\n*Статус:* {escape_markdown(status_map.get(final_data_dict['kiok_approved'], 'Неизвестно'), version=2)}")
+    report_lines.append(f"_{edited_by_text}: {admin_name}_")
     final_text = "\n".join(report_lines)
     
     topic_info = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name = %s", (final_data_dict['discipline_name'],))
@@ -2378,7 +2455,7 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 ]])
             await context.bot.edit_message_text(
                 chat_id=chat_id, message_id=final_data_dict['group_message_id'],
-                text=final_text, parse_mode='MarkdownV2', reply_markup=original_buttons # Используем MarkdownV2 для большей надежности
+                text=final_text, parse_mode='MarkdownV2', reply_markup=original_buttons
             )
         except Exception as e:
             logger.error(f"Не удалось обновить сообщение в группе: {e}\nТекст: {final_text}")
@@ -5058,6 +5135,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(report_overview_chart_prompt, pattern="^report_overview_chart_prompt$"))
     application.add_handler(CallbackQueryHandler(report_menu, pattern="^report_menu_all$"))
     application.add_handler(CallbackQueryHandler(manage_menu, pattern="^manage_menu$"))
+    application.add_handler(CallbackQueryHandler(generate_overview_chart, pattern="^gen_overview_chart_"))
 
      
     
