@@ -2380,8 +2380,8 @@ async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ОКОНЧАТЕЛЬНО ИСПРАВЛЕННАЯ ВЕРСЯ:
-    Исправлена синтаксическая ошибка в f-строке для объема.
+    ФИНАЛЬНАЯ ВЕРСИЯ:
+    Надежно экранирует все данные для MarkdownV2.
     """
     query = update.callback_query
     await query.answer()
@@ -2411,40 +2411,43 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     final_data_dict = dict(report_data)
     admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
     
-    admin_name = escape_markdown(f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор", version=2)
-    foreman_name_safe = escape_markdown(final_data_dict['foreman_name'], version=2)
-    corpus_name_safe = escape_markdown(final_data_dict['corpus_name'], version=2)
-    work_type_safe = escape_markdown(final_data_dict['work_type_name'], version=2)
-    notes_safe = escape_markdown(final_data_dict['notes'] or "", version=2)
+    # --- НАЧАЛО ИСПРАВЛЕНИЯ: Глобальное и надежное экранирование ---
+    def safe_escape(text):
+        return escape_markdown(str(text), version=2)
+
+    admin_name = safe_escape(f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор")
+    foreman_name_safe = safe_escape(final_data_dict['foreman_name'])
+    corpus_name_safe = safe_escape(final_data_dict['corpus_name'])
+    work_type_safe = safe_escape(final_data_dict['work_type_name'])
+    notes_safe = safe_escape(final_data_dict['notes'] or "")
     unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
-    unit = escape_markdown(unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else "", version=2)
-    edited_by_text = escape_markdown(get_text('edited_by', get_user_language(admin_id)), version=2)
+    unit = safe_escape(unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else "")
+    edited_by_text = safe_escape(get_text('edited_by', get_user_language(admin_id)))
     
+    date_str_safe = safe_escape(final_data_dict['report_date'].strftime('%d.%m.%Y'))
+    volume_str_safe = safe_escape(final_data_dict['volume'])
+    people_count_safe = final_data_dict['people_count'] # Число, не требует экранирования
+
     def marker(field_name):
         return "✏️" if field_name in changed_fields else "▪️"
 
-    # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
-    # Приводим дату и объем к строке и затем безопасно заменяем точки
-    date_str_safe = final_data_dict['report_date'].strftime('%d.%m.%Y').replace('.', r'\.')
-    volume_str_safe = str(final_data_dict['volume']).replace('.', r'\.')
-    
     report_lines = [
         f"📄 *Отчет от бригадира: {foreman_name_safe}* \\(ID: {report_id}\\)\n",
         f"{marker('corpus_name')} *Корпус:* {corpus_name_safe}",
         f"{marker('work_type_name')} *Вид работ:* {work_type_safe}",
         f"{marker('report_date')} *Дата:* {date_str_safe}",
-        f"{marker('people_count')} *Кол-во человек:* {final_data_dict['people_count']}",
+        f"{marker('people_count')} *Кол\\-во человек:* {people_count_safe}",
         f"{marker('volume')} *Объем:* {volume_str_safe} {unit}",
     ]
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-
-    if notes_safe:
+    if notes_safe.strip(): # Проверяем, что примечание не пустое после экранирования
         report_lines.append(f"{marker('notes')} *Примечание:* {notes_safe}")
 
     status_map = {1: '✅ Согласовано', 0: '⏳ Ожидает', -1: '❌ Отклонено'}
-    status_text_safe = escape_markdown(status_map.get(final_data_dict['kiok_approved'], 'Неизвестно'), version=2)
+    status_text_safe = safe_escape(status_map.get(final_data_dict['kiok_approved'], 'Неизвестно'))
     report_lines.append(f"\n*Статус:* {status_text_safe}")
     report_lines.append(f"_{edited_by_text}: {admin_name}_")
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+    
     final_text = "\n".join(report_lines)
     
     topic_info = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name = %s", (final_data_dict['discipline_name'],))
@@ -3113,7 +3116,6 @@ async def list_reports_for_deletion(update: Update, context: ContextTypes.DEFAUL
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")])
     await query.edit_message_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-
 async def confirm_delete_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Запрашивает подтверждение на удаление отчета."""
     query = update.callback_query
@@ -3191,7 +3193,6 @@ async def confirm_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-
 async def execute_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Удаляет сегодняшний табель для бригадира, ПРОВЕРЯЯ ПРАВА."""
     query = update.callback_query
@@ -3218,7 +3219,6 @@ async def execute_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYP
     
     greeting_text = "⚠️ Администратор сбросил ваш сегодняшний табель. Пожалуйста, подайте его заново."
     await force_user_to_main_menu(context, user_id_to_reset, greeting_text)
-
 
 # --- EXCEL---
 async def export_reports_to_excel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -5140,8 +5140,8 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(report_menu, pattern="^report_menu_all$"))
     application.add_handler(CallbackQueryHandler(manage_menu, pattern="^manage_menu$"))
     application.add_handler(CallbackQueryHandler(generate_overview_chart, pattern="^gen_overview_chart_"))
-
-     
+    application.add_handler(CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview$"))
+    
     
     #application.add_handler(CallbackQueryHandler(show_problem_brigades_menu, pattern="^report_underperforming$"))
     application.add_handler(CallbackQueryHandler(handle_problem_brigades_button, pattern="^handle_problem_brigades_button$"))
