@@ -1993,39 +1993,59 @@ async def admin_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def admin_select_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Админ выбрал дисциплину, показываем бригады."""
+    """
+    ИСПРАВЛЕННАЯ ВЕРСИЯ С ПАГИНАЦИЕЙ:
+    Админ выбрал дисциплину, показываем бригады постранично.
+    """
     query = update.callback_query
     await query.answer()
-    discipline_name = query.data.split('_', 2)[-1]
+
+    parts = query.data.split('_')
+    discipline_name = parts[2]
+    page = int(parts[3]) if len(parts) > 3 else 1
+    
     context.user_data['admin_edit_discipline'] = discipline_name
 
-    # Находим бригады в этой дисциплине, у которых есть хоть один отчет
     brigades_raw = db_query(
         """
         SELECT b.brigade_name, b.user_id, COUNT(r.id) as report_count
-        FROM brigades b
-        JOIN reports r ON b.brigade_name = r.foreman_name
-        WHERE r.discipline_name = %s
-        GROUP BY b.brigade_name, b.user_id
-        ORDER BY b.brigade_name
-        """,
-        (discipline_name,)
+        FROM brigades b JOIN reports r ON b.brigade_name = r.foreman_name
+        WHERE r.discipline_name = %s GROUP BY b.brigade_name, b.user_id ORDER BY b.brigade_name
+        """, (discipline_name,)
     )
-
+    
     if not brigades_raw:
         await query.edit_message_text(
             f"В дисциплине *{discipline_name}* не найдено бригад с отчетами.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="admin_report_menu_start")]])
         )
-        return ConversationHandler.END
+        return ConversationHandler.END # Завершаем, если нет бригад
+
+    # Логика пагинации
+    items_per_page = 10 # Можно настроить
+    total_items = len(brigades_raw)
+    total_pages = (total_items + items_per_page - 1) // items_per_page
+    start_index = (page - 1) * items_per_page
+    end_index = start_index + items_per_page
+    brigades_on_page = brigades_raw[start_index:end_index]
 
     keyboard = []
-    for name, user_id, count in brigades_raw:
+    for name, user_id, count in brigades_on_page:
         keyboard.append([InlineKeyboardButton(f"{name} (отчетов: {count})", callback_data=f"admin_brig_{user_id}")])
+    
+    # Кнопки навигации
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"admin_disc_{discipline_name}_{page-1}"))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"admin_disc_{discipline_name}_{page+1}"))
+    if nav_buttons:
+        keyboard.append(nav_buttons)
 
     keyboard.append([InlineKeyboardButton("◀️ Назад к выбору дисциплин", callback_data="admin_report_menu_start")])
+    
     await query.edit_message_text(
-        f"🗂️ *Управление отчетами: {discipline_name}*\n\n*Шаг 2:* Выберите бригаду",
+        f"🗂️ *Управление отчетами: {discipline_name}* (Стр. {page}/{total_pages})\n\n*Шаг 2:* Выберите бригаду",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -2194,36 +2214,45 @@ async def cancel_admin_operation(update: Update, context: ContextTypes.DEFAULT_T
 
 async def start_report_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Начало диалога редактирования. Показывает меню с полями для изменения.
+    ИСПРАВЛЕННАЯ ВЕРСИЯ:
+    Начало или продолжение диалога редактирования.
+    Загружает данные из БД только один раз, при первом входе.
     """
     query = update.callback_query
     await query.answer()
 
-    report_id = int(query.data.split('_')[-1])
-    
-    # Загружаем текущие данные отчета один раз, чтобы не дергать БД на каждом шаге
-    report_data_raw = db_query("SELECT * FROM reports WHERE id = %s", (report_id,))
-    if not report_data_raw:
-        await query.edit_message_text("❌ Ошибка: Отчет не найден (возможно, уже удален).")
-        return ConversationHandler.END
-    
-    # Преобразуем данные в удобный словарь
-    columns = [desc[0] for desc in db_query("SELECT column_name FROM information_schema.columns WHERE table_name = 'reports' ORDER BY ordinal_position")]
-    report_data = dict(zip(columns, report_data_raw[0]))
-    context.user_data['edit_report_data'] = report_data
+    # Если мы заходим в редактирование впервые, загружаем данные из БД
+    if 'edit_report_data' not in context.user_data:
+        report_id = int(query.data.split('_')[-1])
+        report_data_raw = db_query("SELECT * FROM reports WHERE id = %s", (report_id,))
+        if not report_data_raw:
+            await query.edit_message_text("❌ Ошибка: Отчет не найден.")
+            return ConversationHandler.END
+        
+        columns = [desc[0] for desc in db_query("SELECT column_name FROM information_schema.columns WHERE table_name = 'reports' ORDER BY ordinal_position")]
+        report_data = dict(zip(columns, report_data_raw[0]))
+        context.user_data['edit_report_data'] = report_data
+        context.user_data['changed_fields'] = set() # Инициализируем пустое множество для изменений
+    else:
+        # Иначе используем уже измененные данные из памяти
+        report_data = context.user_data['edit_report_data']
 
-    # Формируем текст с текущими данными
+    # --- Функция для маркировки измененных полей ---
+    def marker(field_name):
+        return "✏️" if field_name in context.user_data.get('changed_fields', set()) else "▪️"
+
+    # Формируем текст с текущими данными и маркерами
     date_display = report_data['report_date'].strftime("%d.%m.%Y")
     text_lines = [
-        f"✏️ *Редактирование отчета ID: {report_id}*",
-        f"--------------------",
-        f"▪️ *Корпус:* {report_data['corpus_name']}",
-        f"▪️ *Вид работ:* {report_data['work_type_name']}",
-        f"▪️ *Дата:* {date_display}",
-        f"▪️ *Кол-во чел.:* {report_data['people_count']}",
-        f"▪️ *Объем:* {report_data['volume']}",
-        f"▪️ *Примечание:* {report_data['notes'] or 'нет'}",
-        f"--------------------",
+        f"✏️ *Редактирование отчета ID: {report_data['id']}*",
+        "--------------------",
+        f"{marker('corpus_name')} *Корпус:* {report_data['corpus_name']}",
+        f"{marker('work_type_name')} *Вид работ:* {report_data['work_type_name']}",
+        f"{marker('report_date')} *Дата:* {date_display}",
+        f"{marker('people_count')} *Кол-во чел.:* {report_data['people_count']}",
+        f"{marker('volume')} *Объем:* {report_data['volume']}",
+        f"{marker('notes')} *Примечание:* {report_data['notes'] or 'нет'}",
+        "--------------------",
         "*Какое поле вы хотите изменить?*",
     ]
 
@@ -2238,11 +2267,7 @@ async def start_report_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [InlineKeyboardButton("❌ Отмена", callback_data="edit_cancel")],
     ]
 
-    await query.edit_message_text(
-        "\n".join(text_lines),
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
+    await query.edit_message_text("\n".join(text_lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     return SELECT_FIELD_TO_EDIT
 
 
@@ -2274,36 +2299,31 @@ async def prompt_for_new_value(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Обрабатывает введенное значение, сохраняет его и возвращает в меню редактирования.
+    ИСПРАВЛЕННАЯ ВЕРСИЯ:
+    Обрабатывает новое значение, сохраняет его в context и возвращает в меню редактирования.
     """
     new_value = update.message.text
     field = context.user_data.get('field_to_edit')
     report_data = context.user_data.get('edit_report_data')
 
-    # Валидация данных
+    # Валидация и сохранение данных в context
     try:
         if field == 'people_count':
             report_data[field] = int(new_value)
         elif field == 'volume':
             report_data[field] = float(new_value.replace(',', '.'))
         elif field == 'report_date':
-            # Сохраняем и в формате date, и в строковом
-            date_obj = datetime.strptime(new_value, "%d.%m.%Y").date()
-            report_data[field] = date_obj
-        else:
+            report_data[field] = datetime.strptime(new_value, "%d.%m.%Y").date()
+        else: # для текстовых полей
             report_data[field] = new_value
         
         # Помечаем поле как измененное
-        if 'changed_fields' not in context.user_data:
-            context.user_data['changed_fields'] = set()
         context.user_data['changed_fields'].add(field)
-
     except ValueError:
         await update.message.reply_text("❗️ Неверный формат данных. Попробуйте еще раз.")
-        # Возвращаемся к ожиданию ввода, не выходя из состояния
-        return AWAITING_NEW_VALUE
+        return AWAITING_NEW_VALUE # Остаемся ждать корректного ввода
 
-    # Удаляем сообщения (запрос и ответ пользователя)
+    # Удаляем служебные сообщения
     await update.message.delete()
     last_bot_msg_id = context.user_data.pop('last_bot_message_id', None)
     if last_bot_msg_id:
@@ -2311,18 +2331,19 @@ async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=last_bot_msg_id)
         except Exception: pass
             
-    # Пересоздаем меню редактирования с уже обновленными данными
-    # Для этого нам нужен объект query, который мы создадим искусственно
-    # Это немного "хак", но самый простой способ переиспользовать код
-    fake_query_data = f"admin_edit_{report_data['id']}"
-    update.callback_query = type('obj', (object,), {'data': fake_query_data, 'answer': (lambda: None), 'edit_message_text': (lambda text, reply_markup, parse_mode: context.bot.send_message(update.effective_chat.id, text, reply_markup=reply_markup, parse_mode=parse_mode))})()
-    
-    # Возвращаемся на первый шаг, который покажет обновленное меню
+    # Возвращаемся в главное меню редактирования, которое теперь покажет обновленные данные
+    # Создаем фиктивный query, чтобы переиспользовать функцию start_report_edit
+    query = type('obj', (object,), {
+        'data': '', 'answer': (lambda: None), 'from_user': update.effective_user,
+        'edit_message_text': (lambda text, reply_markup, parse_mode: context.bot.send_message(update.effective_chat.id, text, reply_markup=reply_markup, parse_mode=parse_mode))
+    })()
+
     return await start_report_edit(update, context)
 
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
+    ИСПРАВЛЕННАЯ ВЕРСИЯ:
     Сохраняет все изменения в БД и обновляет сообщение в группе.
     """
     query = update.callback_query
@@ -2333,70 +2354,61 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     changed_fields = context.user_data.get('changed_fields', set())
     report_id = report_data['id']
 
+    if not changed_fields:
+        await query.edit_message_text("Вы ничего не изменили. Сохранение отменено.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"admin_brig_{context.user_data['admin_edit_brigade_id']}")]
+        ]))
+        context.user_data.clear()
+        return ConversationHandler.END
+
     await query.edit_message_text(f"⏳ Сохраняю изменения для отчета ID {report_id}...")
 
     # 1. Сохраняем в БД
-    # Преобразуем дату обратно в строку для БД, если она была изменена
-    if 'report_date' in changed_fields and isinstance(report_data['report_date'], date):
-        report_data['report_date'] = report_data['report_date'].strftime('%Y-%m-%d')
-
     update_query = sql.SQL("UPDATE reports SET {} WHERE id = %s").format(
-        sql.SQL(', ').join(
-            sql.SQL("{} = %s").format(sql.Identifier(key)) for key in changed_fields
-        )
+        sql.SQL(', ').join(sql.SQL("{} = %s").format(sql.Identifier(key)) for key in changed_fields)
     )
     params = [report_data[key] for key in changed_fields] + [report_id]
     db_query(update_query, tuple(params))
     
     # 2. Обновляем сообщение в группе
-    # Получаем данные для форматирования сообщения еще раз, на случай если они изменились
-    final_report_data = db_query("SELECT * FROM reports WHERE id = %s", (report_id,))
-    columns = [desc[0] for desc in db_query("SELECT column_name FROM information_schema.columns WHERE table_name = 'reports' ORDER BY ordinal_position")]
-    final_data_dict = dict(zip(columns, final_report_data[0]))
-
-    # Получаем имя админа
+    final_data_dict = dict(report_data) # Используем данные из context
     admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
     admin_name = f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор"
-
-    # Формируем текст сообщения с пометками *
-    def get_field_text(field_name, display_text):
-        star = "*" if field_name in changed_fields else ""
-        return f"{star}{display_text}{star}"
     
     unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
     unit = unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else ""
 
     report_lines = [
         f"📄 *Отчет от бригадира: {final_data_dict['foreman_name']}* (ID: {report_id})\n",
-        get_field_text("corpus_name", f"▪️ *Корпус:* {final_data_dict['corpus_name']}"),
-        get_field_text("work_type_name", f"▪️ *Вид работ:* {final_data_dict['work_type_name']}"),
-        get_field_text("report_date", f"▪️ *Дата:* {final_data_dict['report_date'].strftime('%d.%m.%Y')}"),
-        get_field_text("people_count", f"▪️ *Кол-во человек:* {final_data_dict['people_count']}"),
-        get_field_text("volume", f"▪️ *Выполненный объем:* {final_data_dict['volume']} {unit}"),
+        f"▪️ *Корпус:* {final_data_dict['corpus_name']}",
+        f"▪️ *Вид работ:* {final_data_dict['work_type_name']}",
+        f"▪️ *Дата:* {final_data_dict['report_date'].strftime('%d.%m.%Y')}",
+        f"▪️ *Кол-во человек:* {final_data_dict['people_count']}",
+        f"▪️ *Выполненный объем:* {final_data_dict['volume']} {unit}",
     ]
     if final_data_dict['notes']:
-        report_lines.append(get_field_text("notes", f"▪️ *Примечание:* {final_data_dict['notes']}"))
+        report_lines.append(f"▪️ *Примечание:* {final_data_dict['notes']}")
 
-    # Добавляем статус и подпись редактора
     status_map = {1: '✅ Согласовано', 0: '⏳ Ожидает', -1: '❌ Отклонено'}
     report_lines.append(f"\n*Статус:* {status_map.get(final_data_dict['kiok_approved'], 'Неизвестно')}")
     report_lines.append(f"_{get_text('edited_by', get_user_language(admin_id))}: {admin_name}_")
-
     final_text = "\n".join(report_lines)
     
-    # Редактируем сообщение в группе КИОК
     topic_info = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name = %s", (final_data_dict['discipline_name'],))
     if topic_info and final_data_dict['group_message_id']:
         chat_id, topic_id = topic_info[0]
         try:
+            # Для надежности используем тот же reply_markup, что и был
+            original_buttons = InlineKeyboardMarkup([[
+                InlineKeyboardButton("✅ Согласовать", callback_data=f"kiok_approve_{report_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"kiok_reject_{report_id}")
+            ]]) if final_data_dict['kiok_approved'] == 0 else None
+
             await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=final_data_dict['group_message_id'],
-                text=final_text,
-                parse_mode="Markdown"
+                chat_id=chat_id, message_id=final_data_dict['group_message_id'],
+                text=final_text, parse_mode="Markdown", reply_markup=original_buttons
             )
         except Exception as e:
-            logger.error(f"Не удалось обновить сообщение в группе после редактирования: {e}")
+            logger.error(f"Не удалось обновить сообщение в группе: {e}")
 
     await query.edit_message_text(f"✅ Отчет ID {report_id} успешно сохранен!")
     
