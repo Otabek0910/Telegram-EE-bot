@@ -2322,17 +2322,13 @@ async def start_report_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return SELECT_FIELD_TO_EDIT
 
 async def prompt_for_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    НОВАЯ ВЕРСИЯ: Запрашивает новое значение.
-    Теперь умеет показывать меню для выбора дисциплины.
-    """
+    """Запрашивает новое значение. (Версия 4.0)"""
     query = update.callback_query
     await query.answer()
 
-    field_to_edit = query.data.split('_')[-1]
+    field_to_edit = query.data.split('edit_field_')[-1]
     context.user_data['field_to_edit'] = field_to_edit
     
-    # Если нужно изменить дисциплину, показываем список
     if field_to_edit == 'discipline_name':
         disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
         keyboard = [[InlineKeyboardButton(name, callback_data=f"set_new_value_{name}")] for name, in disciplines]
@@ -2340,42 +2336,38 @@ async def prompt_for_new_value(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("Выберите новую дисциплину:", reply_markup=InlineKeyboardMarkup(keyboard))
         return AWAITING_NEW_VALUE
 
-    # Для остальных полей просим ввести текст
     field_names = {
         'corpus_name': 'корпус', 'work_type_name': 'вид работ',
         'report_date': 'дату (ДД.ММ.ГГГГ)', 'people_count': 'количество человек',
         'volume': 'объем', 'notes': 'примечание'
     }
-    
     prompt_text = f"Введите новое значение для поля *'{field_names.get(field_to_edit, field_to_edit)}'*:"
     message = await query.edit_message_text(prompt_text, parse_mode="Markdown")
     context.user_data['last_bot_message_id'] = message.message_id
-
     return AWAITING_NEW_VALUE
 
 async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    ОТЛАДОЧНАЯ ВЕРСЯ:
-    Добавлено логирование для отслеживания данных. Исправлена логика.
-    """
+    """Обрабатывает новое значение, исправляя ошибку с 'count'. (Версия 4.0)"""
     field = context.user_data.get('field_to_edit')
     report_data = context.user_data.get('edit_report_data')
-    logger.info(f"[EDIT DEBUG] Начало process_new_value. Поле для изменения: {field}")
+    
+    # ИСПРАВЛЕНИЕ: Убеждаемся, что работаем с правильным ключом 'people_count'
+    if field != 'people_count' and field != 'volume' and field != 'report_date' and field != 'discipline_name' and field != 'corpus_name' and field != 'work_type_name' and field != 'notes':
+        logger.error(f"[EDIT FATAL] Неизвестное поле для редактирования: {field}")
+        return SELECT_FIELD_TO_EDIT
 
     if update.callback_query:
         query = update.callback_query
         await query.answer()
         new_value = query.data.split('set_new_value_')[-1]
-        logger.info(f"[EDIT DEBUG] Получено значение с кнопки: {new_value}")
         report_data[field] = new_value
     else:
         new_value = update.message.text
-        logger.info(f"[EDIT DEBUG] Получено текстовое значение: {new_value}")
         try:
             if field == 'people_count':
                 requested_count = int(new_value)
-                if requested_count <= 0: raise ValueError("Количество должно быть положительным.")
-                # --- ВАЛИДАЦИЯ ---
+                if requested_count <= 0: raise ValueError("Count must be positive.")
+                # ... (валидация остается прежней) ...
                 user_id = context.user_data['admin_edit_brigade_id']
                 report_date_str = report_data['report_date'].strftime('%Y-%m-%d')
                 roster_info = db_query("SELECT total_people FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, report_date_str))
@@ -2383,37 +2375,27 @@ async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s AND id != %s", (report_data['foreman_name'], report_date_str, report_data['id']))
                 total_assigned_others = (assigned_info[0][0] or 0) if assigned_info else 0
                 available_pool = total_declared - total_assigned_others
-                
                 if requested_count > available_pool:
-                    await update.message.reply_text(f"❗️Ошибка: Превышен лимит. Доступно для назначения: {available_pool} чел.")
+                    await update.message.reply_text(f"❗️Ошибка: Превышен лимит. Доступно: {available_pool} чел.")
                     return AWAITING_NEW_VALUE
-                # --- КОНЕЦ ВАЛИДАЦИИ ---
-                report_data[field] = requested_count
-
+                report_data['people_count'] = requested_count # Явное присвоение
             elif field == 'volume':
-                report_data[field] = float(new_value.replace(',', '.'))
+                report_data['volume'] = float(new_value.replace(',', '.')) # Явное присвоение
             elif field == 'report_date':
-                report_data[field] = datetime.strptime(new_value, "%d.%m.%Y").date()
+                report_data['report_date'] = datetime.strptime(new_value, "%d.%m.%Y").date() # Явное присвоение
             else:
                 report_data[field] = new_value
-        except (ValueError, TypeError) as e:
-            logger.error(f"[EDIT DEBUG] Ошибка валидации: {e}")
-            await update.message.reply_text("❗️ Неверный формат данных. Попробуйте еще раз.")
+        except (ValueError, TypeError):
+            await update.message.reply_text("❗️ Неверный формат данных.")
             return AWAITING_NEW_VALUE
         await update.message.delete()
 
     context.user_data['changed_fields'].add(field)
-    logger.info(f"[EDIT DEBUG] Поле '{field}' добавлено в changed_fields. Текущий список: {context.user_data['changed_fields']}")
-    logger.info(f"[EDIT DEBUG] Данные в report_data обновлены: {report_data}")
-    
     await display_edit_menu(update, context)
     return SELECT_FIELD_TO_EDIT
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ:
-    После сохранения сразу возвращает к списку отчетов, решая проблему навигации.
-    """
+    """Сохраняет отчет и возвращает к списку. (Версия 4.0)"""
     query = update.callback_query
     
     admin_id = str(query.from_user.id)
@@ -2421,11 +2403,8 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     changed_fields = context.user_data.get('changed_fields', set())
     report_id = report_data['id']
 
-    logger.info(f"[SAVE DEBUG] Начало сохранения. Поля для изменения: {changed_fields}")
-
     if not changed_fields:
         await query.answer("Вы ничего не изменили", show_alert=True)
-        # Просто возвращаемся в меню редактирования
         return SELECT_FIELD_TO_EDIT
 
     await query.answer("⏳ Сохраняю...")
@@ -2437,16 +2416,12 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     params = [report_data[key] for key in changed_fields] + [report_id]
     db_query_result = db_query(update_query, tuple(params))
     
-    if db_query_result is None and len(params) > 1: # Проверка, что запрос не select и не пустой
-        logger.error(f"[SAVE DEBUG] ОШИБКА: Запрос на обновление БД не удался.")
-        await query.edit_message_text("❌ Произошла ошибка при сохранении в базу данных.")
+    if db_query_result is None and len(params) > 1:
+        await query.edit_message_text("❌ Ошибка при сохранении в базу данных.")
         return SELECT_FIELD_TO_EDIT
 
-    logger.info(f"[SAVE DEBUG] Данные для отчета ID {report_id} сохранены в БД.")
-
     # Шаг 2: Формирование и отправка сообщения в группу
-    # ... (весь блок формирования сообщения остается таким же, как в прошлой версии)
-    final_data_dict = dict(report_data)
+    final_data_dict = report_data # Используем данные из context, они самые свежие
     admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
     
     def safe_escape(text): return escape_markdown(str(text), version=2)
@@ -2459,7 +2434,6 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     notes_safe = safe_escape(final_data_dict['notes'] or "")
     unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
     unit = safe_escape(unit_of_measure_raw[0][0] if unit_of_measure_raw else "")
-    
     date_str_safe = safe_escape(final_data_dict['report_date'].strftime('%d.%m.%Y'))
     volume_str_safe = safe_escape(final_data_dict['volume'])
     
@@ -2483,7 +2457,6 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if topic_info and final_data_dict.get('group_message_id'):
         chat_id, topic_id = topic_info[0]
         try:
-            # ... (логика кнопок согласования)
             original_buttons = None
             if final_data_dict['kiok_approved'] == 0:
                  original_buttons = InlineKeyboardMarkup([
@@ -2493,17 +2466,14 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 chat_id=chat_id, message_id=final_data_dict['group_message_id'],
                 text=final_text, parse_mode='MarkdownV2', reply_markup=original_buttons
             )
-            logger.info(f"[SAVE DEBUG] Сообщение в группе для отчета ID {report_id} обновлено.")
         except Exception as e: logger.error(f"Не удалось обновить сообщение в группе: {e}")
 
-    # --- ГЛАВНОЕ ИЗМЕНЕНИЕ В НАВИГАЦИИ ---
+    await query.answer("✅ Сохранено!", show_alert=True)
+    
     context.user_data.pop('edit_report_data', None)
     context.user_data.pop('changed_fields', None)
     
-    # Вместо показа сообщения об успехе, сразу показываем обновленный список отчетов
-    # Используем дату из отчета, чтобы вернуться на правильную страницу
     report_date_obj = final_data_dict['report_date']
-    await query.answer("✅ Сохранено!", show_alert=True)
     return await admin_show_reports_for_brigade(update, context, report_date=report_date_obj)
 
 async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -2518,10 +2488,7 @@ async def cancel_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     return await admin_show_reports_for_brigade(update, context, date.today())
 
 async def display_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    НОВАЯ ВЕРСИЯ: Отображает меню редактирования.
-    Добавлена кнопка для смены дисциплины.
-    """
+    """Отображает меню редактирования. (Версия 4.0)"""
     report_data = context.user_data['edit_report_data']
 
     def marker(field_name):
@@ -2529,19 +2496,16 @@ async def display_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     date_display = report_data['report_date'].strftime("%d.%m.%Y")
     text_lines = [
-        f"✏️ *Редактирование отчета ID: {report_data['id']}*",
-        "--------------------",
+        f"✏️ *Редактирование отчета ID: {report_data['id']}*", "---",
         f"{marker('corpus_name')} *Корпус:* {report_data['corpus_name']}",
         f"{marker('discipline_name')} *Дисциплина:* {report_data['discipline_name']}",
         f"{marker('work_type_name')} *Вид работ:* {report_data['work_type_name']}",
         f"{marker('report_date')} *Дата:* {date_display}",
         f"{marker('people_count')} *Кол-во чел.:* {report_data['people_count']}",
         f"{marker('volume')} *Объем:* {report_data['volume']}",
-        f"{marker('notes')} *Примечание:* {report_data['notes'] or 'нет'}",
-        "--------------------",
+        f"{marker('notes')} *Примечание:* {report_data['notes'] or 'нет'}", "---",
         "*Какое поле вы хотите изменить?*",
     ]
-
     keyboard = [
         [InlineKeyboardButton("Корпус", callback_data="edit_field_corpus_name"), InlineKeyboardButton("Дисциплину", callback_data="edit_field_discipline_name")],
         [InlineKeyboardButton("Вид работ", callback_data="edit_field_work_type_name"), InlineKeyboardButton("Дату", callback_data="edit_field_report_date")],
@@ -2550,18 +2514,17 @@ async def display_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         [InlineKeyboardButton("✅ Сохранить и завершить", callback_data="edit_save")],
         [InlineKeyboardButton("❌ Отмена", callback_data="edit_cancel")],
     ]
-
-    final_text = "\n".join(text_lines)
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(final_text, reply_markup=reply_markup, parse_mode="Markdown")
+        await update.callback_query.edit_message_text(text="\n".join(text_lines), reply_markup=reply_markup, parse_mode="Markdown")
     else:
         last_bot_msg_id = context.user_data.pop('last_bot_message_id', None)
         if last_bot_msg_id:
             try: await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=last_bot_msg_id)
             except Exception: pass
-        await context.bot.send_message(update.effective_chat.id, final_text, reply_markup=reply_markup, parse_mode="Markdown")
+        await context.bot.send_message(update.effective_chat.id, "\n".join(text_lines), reply_markup=reply_markup, parse_mode="Markdown")
+
 
 # --- ЛОГИКА РЕГИСТРАЦИИ ---
 
