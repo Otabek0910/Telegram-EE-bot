@@ -199,24 +199,25 @@ def init_db():
         if conn:
             conn.close()
     
-def db_query(query, params=()):
+def db_query(query: str, params: tuple = ()):
     """
-    ФИНАЛЬНАЯ НАДЕЖНАЯ ВЕРСЯ:
-    Гарантированно возвращает кортеж (успех, результат).
+    ИСПРАВЛЕННАЯ ВЕРСИЯ:
+    Универсальная функция, которая теперь корректно работает и с текстовыми
+    запросами, и с форматированными объектами psycopg2.sql.
     """
     if not DATABASE_URL:
-        logger.error("Переменная DATABASE_URL не определена!")
-        return (False, "DATABASE_URL not set")
-
-    success = False
-    data = None
+        logger.error("Переменная DATABASE_URL не определена в коде!")
+        return None
+    
+    result = None
     conn = None
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cursor = conn.cursor()
         cursor.execute(query, params)
 
-        # Проверяем, нужно ли получать данные
+        # --- КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ---
+        # Проверяем, является ли запрос текстовой строкой, прежде чем его обрабатывать
         is_select_query = False
         is_returning_query = False
         if isinstance(query, str):
@@ -227,26 +228,21 @@ def db_query(query, params=()):
                 is_returning_query = True
         
         if is_select_query:
-            data = cursor.fetchall()
+            result = cursor.fetchall()
         elif is_returning_query:
-            data = cursor.fetchone()[0]
-
+            result = cursor.fetchone()[0]
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+        
         conn.commit()
-        success = True
-
+        cursor.close()
     except Exception as e:
-        error_text = f"Ошибка БД: {e}"
-        logger.error(error_text)
-        if conn:
-            conn.rollback()
-        data = str(e) # В случае ошибки, возвращаем ее текст
-        success = False
-
+        # Логируем ошибку вместе с самим запросом для удобной отладки
+        logger.error(f"Ошибка базы данных PostgreSQL: {e}\nЗапрос: {query}\nПараметры: {params}")
+        if conn: conn.rollback()
+        return None
     finally:
-        if conn:
-            conn.close()
-
-    return success, data
+        if conn: conn.close()
+    return result
 
 def ensure_dirs_exist():
     """Проверяет и создает необходимые директории для файлов."""
@@ -256,7 +252,7 @@ def ensure_dirs_exist():
     logger.info(f"Проверены и созданы директории: {TEMP_DIR}/ и {DASHBOARD_DIR}/")
 
 def check_user_role(user_id: str) -> dict:
-    """Проверяет все таблицы ролей и возвращает подробный объект с правами (исправленная версия)."""
+    """Проверяет все таблицы ролей и возвращает подробный объект с правами (PostgreSQL-совместимая версия)."""
     role_info = {
         'isAdmin': False, 'isManager': False, 'managerLevel': None,
         'isForeman': False, 'isPto': False, 'isKiok': False,
@@ -267,37 +263,37 @@ def check_user_role(user_id: str) -> dict:
         role_info.update({'isAdmin': True, 'isManager': True, 'managerLevel': 1})
         return role_info
 
-    # ИСПРАВЛЕНО: Распаковываем ответ от db_query для каждой проверки
-    success, admin_check = db_query("SELECT phone_number FROM admins WHERE user_id = %s", (user_id,))
-    if success and admin_check:
+    # В запросах сразу соединяем (JOIN) с таблицей дисциплин, чтобы получить имя
+    admin_check = db_query("SELECT phone_number FROM admins WHERE user_id = %s", (user_id,))
+    if admin_check:
         role_info['isAdmin'] = True
         if not role_info['phoneNumber']: role_info['phoneNumber'] = admin_check[0][0]
 
-    success, manager_check = db_query("SELECT m.level, d.name, m.phone_number FROM managers m LEFT JOIN disciplines d ON m.discipline = d.id WHERE m.user_id = %s", (user_id,))
-    if success and manager_check:
+    manager_check = db_query("SELECT m.level, d.name, m.phone_number FROM managers m LEFT JOIN disciplines d ON m.discipline = d.id WHERE m.user_id = %s", (user_id,))
+    if manager_check:
         role_info['isManager'] = True
         level, discipline_name, phone = manager_check[0]
         role_info['managerLevel'] = level
         if not role_info['discipline']: role_info['discipline'] = discipline_name
         if not role_info['phoneNumber']: role_info['phoneNumber'] = phone
     
-    success, brigade_check = db_query("SELECT b.brigade_name, d.name, b.phone_number FROM brigades b LEFT JOIN disciplines d ON b.discipline = d.id WHERE b.user_id = %s", (user_id,))
-    if success and brigade_check:
+    brigade_check = db_query("SELECT b.brigade_name, d.name, b.phone_number FROM brigades b LEFT JOIN disciplines d ON b.discipline = d.id WHERE b.user_id = %s", (user_id,))
+    if brigade_check:
         role_info['isForeman'] = True
         brigade_name, discipline_name, phone = brigade_check[0]
         role_info['brigadeName'] = brigade_name
         if not role_info['discipline']: role_info['discipline'] = discipline_name
         if not role_info['phoneNumber']: role_info['phoneNumber'] = phone
         
-    success, pto_check = db_query("SELECT d.name, p.phone_number FROM pto p LEFT JOIN disciplines d ON p.discipline = d.id WHERE p.user_id = %s", (user_id,))
-    if success and pto_check:
+    pto_check = db_query("SELECT d.name, p.phone_number FROM pto p LEFT JOIN disciplines d ON p.discipline = d.id WHERE p.user_id = %s", (user_id,))
+    if pto_check:
         role_info['isPto'] = True
         discipline_name, phone = pto_check[0]
         if not role_info['discipline']: role_info['discipline'] = discipline_name
         if not role_info['phoneNumber']: role_info['phoneNumber'] = phone
         
-    success, kiok_check = db_query("SELECT d.name, k.phone_number FROM kiok k LEFT JOIN disciplines d ON k.discipline = d.id WHERE k.user_id = %s", (user_id,))
-    if success and kiok_check:
+    kiok_check = db_query("SELECT d.name, k.phone_number FROM kiok k LEFT JOIN disciplines d ON k.discipline = d.id WHERE k.user_id = %s", (user_id,))
+    if kiok_check:
         role_info['isKiok'] = True
         discipline_name, phone = kiok_check[0]
         if not role_info['discipline']: role_info['discipline'] = discipline_name
@@ -392,10 +388,10 @@ async def send_approval_request(context: ContextTypes.DEFAULT_TYPE, user_id_str:
         [InlineKeyboardButton("❌ Отклонить", callback_data=reject_callback)]
     ]
 
-    # ИСПРАВЛЕНО: Распаковываем ответ от db_query
-    success, admin_ids_raw = db_query("SELECT user_id FROM admins")
-    admin_ids = [row[0] for row in admin_ids_raw] if success and admin_ids_raw else []
-    
+    admin_ids_raw = db_query("SELECT user_id FROM admins")
+    admin_ids = [row[0] for row in admin_ids_raw] if admin_ids_raw else []
+
+    # Добавляем OWNER_ID и убираем дубликаты
     all_approvers = list(set(admin_ids + [OWNER_ID]))
 
     for admin_id in all_approvers:
@@ -888,9 +884,9 @@ async def start_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     # Если это админ/овнер, сначала спрашиваем дисциплину
     if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-        success, disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
-        if not success or not disciplines:
-            await query.edit_message_text("⚠️ В базе данных нет дисциплин.")
+        disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
+        if not disciplines:
+            await query.edit_message_text("⚠️ В базе данных нет дисциплин, невозможно создать отчет.")
             return ConversationHandler.END
 
         # Теперь переменная lang здесь определена, и get_data_translation сработает
@@ -918,9 +914,9 @@ async def show_corps_page(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
     user_id = str(update.effective_user.id)
     lang = get_user_language(user_id)
 
-    success, corps_list_raw = db_query("SELECT id, name FROM construction_objects ORDER BY display_order ASC, name ASC")
+    corps_list_raw = db_query("SELECT id, name FROM construction_objects ORDER BY display_order ASC, name ASC")
     
-    if not success or not corps_list_raw:
+    if not corps_list_raw:
         # Эту ошибку можно не переводить
         text = "⚠️ *Ошибка:* Не удалось найти ни одного корпуса в базе данных. Обратитесь к администратору."
         if message_id_to_edit:
@@ -1107,9 +1103,9 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-            success, total_brigades_raw = db_query("SELECT COUNT(*) FROM brigades")
-            total_brigades = total_brigades_raw[0][0] if success and total_brigades_raw else 0
-
+            total_brigades_raw = db_query("SELECT COUNT(*) FROM brigades")
+            total_brigades = total_brigades_raw[0][0] if total_brigades_raw else 0
+            
             message_text_intro = (
                 f"📊 *{get_text('report_menu_summary_title', lang).format(period=period_text)}*\n\n"
                 f"▪️ {get_text('total_brigades_in_system', lang)} *{total_brigades}*\n"
@@ -1128,12 +1124,12 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             if not discipline_name:
                 raise ValueError("Дисциплина не найдена для этой роли.")
                 
-            success, discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
-            discipline_id = discipline_id_raw[0][0] if success and discipline_id_raw else None
-
-            success, total_brigades_raw = db_query("SELECT COUNT(*) FROM brigades WHERE discipline = %s", (discipline_id,))
-            total_brigades = total_brigades_raw[0][0] if success and total_brigades_raw else 0
-
+            discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
+            discipline_id = discipline_id_raw[0][0] if discipline_id_raw else None
+            
+            total_brigades_raw = db_query("SELECT COUNT(*) FROM brigades WHERE discipline = %s", (discipline_id,))
+            total_brigades = total_brigades_raw[0][0] if total_brigades_raw else 0
+            
             role_filter_sql = "AND discipline_name = %s"
             final_params = (discipline_name,) + tuple(date_params)
             message_text_intro = (
@@ -1142,8 +1138,9 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             )
 
         status_query = f"SELECT kiok_approved, COUNT(*) FROM reports WHERE 1=1 {role_filter_sql} {date_filter_sql} GROUP BY kiok_approved"
-        success, status_counts_raw = db_query(status_query, final_params)
-        status_counts = {row[0]: row[1] for row in status_counts_raw} if success and status_counts_raw else {}
+        status_counts_raw = db_query(status_query, final_params)
+        
+        status_counts = {row[0]: row[1] for row in status_counts_raw} if status_counts_raw else {}
         total_reports = sum(status_counts.values())
         approved = status_counts.get(1, 0)
         rejected = status_counts.get(-1, 0)
@@ -1391,8 +1388,8 @@ async def report_overview_chart_prompt(update: Update, context: ContextTypes.DEF
     # --- ВОТ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ---
     # Если у пользователя полный доступ, показываем все дисциплины
     if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-        success, disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
-        if not success or not disciplines:
+        disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
+        if not disciplines:
             await query.edit_message_text("Ошибка: нет дисциплин для построения графика.")
             return
         
@@ -1435,9 +1432,8 @@ async def show_historical_report_menu(update: Update, context: ContextTypes.DEFA
         try:
             header = "📊 *Общая сводка по всем дисциплинам*"
             
-            success, report_stats_raw = db_query("SELECT kiok_approved, COUNT(*) FROM reports GROUP BY kiok_approved")
-            report_stats = {str(status): count for status, count in report_stats_raw} if success and report_stats_raw else {}
-
+            report_stats_raw = db_query("SELECT kiok_approved, COUNT(*) FROM reports GROUP BY kiok_approved")
+            report_stats = {str(status): count for status, count in report_stats_raw} if report_stats_raw else {}
             total_reports = sum(report_stats.values())
             
             today_str = date.today().strftime('%Y-%m-%d')
@@ -1476,9 +1472,9 @@ async def show_historical_report_menu(update: Update, context: ContextTypes.DEFA
             message.append("\n\n🗂️ *Выберите дисциплину для детального отчета:*")
             final_text = "\n".join(message)
 
-            success, disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
+            disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
             keyboard_buttons = []
-            if success or disciplines:
+            if disciplines:
                 # Получаем язык пользователя, чтобы перевести кнопки
                 lang = get_user_language(str(query.from_user.id))
                 for name, in disciplines:
@@ -1525,22 +1521,21 @@ async def generate_discipline_dashboard(update: Update, context: ContextTypes.DE
         header = f"📊 *Подробный отчет по дисциплине «{get_data_translation(discipline_name, lang)}»*"
         params = (discipline_name,)
         
-        success, discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", params)
-        disc_id = discipline_id_raw[0][0] if success and discipline_id_raw else None
-
+        discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", params)
+        disc_id = discipline_id_raw[0][0] if discipline_id_raw else None
+        
         user_counts = {'brigades': 0, 'pto': 0, 'kiok': 0}
         if disc_id:
             for role in user_counts.keys():
-                success, count_raw = db_query(f"SELECT COUNT(*) FROM {role} WHERE discipline = %s", (disc_id,))
-                if success and count_raw: user_counts[role] = count_raw[0][0]
-
-        success, report_stats_raw = db_query("SELECT kiok_approved, COUNT(*) FROM reports WHERE discipline_name = %s GROUP BY kiok_approved", params)
-        report_stats = {str(status): count for status, count in report_stats_raw} if success and report_stats_raw else {}
-
+                count_raw = db_query(f"SELECT COUNT(*) FROM {role} WHERE discipline = %s", (disc_id,))
+                if count_raw: user_counts[role] = count_raw[0][0]
+        
+        report_stats_raw = db_query("SELECT kiok_approved, COUNT(*) FROM reports WHERE discipline_name = %s GROUP BY kiok_approved", params)
+        report_stats = {str(status): count for status, count in report_stats_raw} if report_stats_raw else {}
         total_reports = sum(report_stats.values())
         
         today_str = date.today().strftime('%Y-%m-%d')
-        success, all_brigades_q = db_query("SELECT brigade_name FROM brigades WHERE discipline = %s", (disc_id,)) if disc_id else (False, [])
+        all_brigades_q = db_query("SELECT brigade_name FROM brigades WHERE discipline = %s", (disc_id,)) if disc_id else []
         all_brigades = {row[0] for row in all_brigades_q}
         reported_today = {row[0] for row in db_query("SELECT DISTINCT foreman_name FROM reports WHERE discipline_name = %s AND report_date = %s", params + (today_str,))}
         non_reporters_count = len(all_brigades - reported_today)
@@ -1818,8 +1813,9 @@ async def manage_users_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         roles = ['admins', 'managers', 'brigades', 'pto', 'kiok']
         for role in roles:
             # Более надежный способ подсчета
-            success, result = db_query(f"SELECT COUNT(*) FROM {role}")
-            counts[role] = result[0][0] if success and result else 0
+            result = db_query(f"SELECT COUNT(*) FROM {role}")
+            counts[role] = result[0][0] if result else 0
+        
         summary_text = (
             f"📊 *Сводка по ролям:*\n"
             f"  ▪️ Администраторы: *{counts['admins']}*\n"
@@ -1872,8 +1868,9 @@ async def link_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     discipline_name_input = " ".join(context.args).strip()
     
     # Ищем каноничное название дисциплины в БД без учета регистра, используя ILIKE для PostgreSQL
-    success, discipline_row = db_query("SELECT name FROM disciplines WHERE name ILIKE %s", (discipline_name_input,))
-    if not success or not discipline_row:
+    discipline_row = db_query("SELECT name FROM disciplines WHERE name ILIKE %s", (discipline_name_input,))
+    
+    if not discipline_row:
         await update.message.reply_text(f"❗ Ошибка: Дисциплина «{discipline_name_input}» не найдена в справочнике.")
         return
     
@@ -1895,13 +1892,13 @@ async def link_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(f"✅ Тема успешно привязана к дисциплине «{canonical_discipline_name}». Ищу неотправленные отчеты...")
     
     # Ищем неотправленные отчеты
-    success, unsent_reports = db_query(
+    unsent_reports = db_query(
         "SELECT * FROM reports WHERE discipline_name = %s AND group_message_id IS NULL",
         (canonical_discipline_name,)
     )
     
     sent_count = 0
-    if success and unsent_reports:
+    if unsent_reports:
         for report_tuple in unsent_reports:
             # Распаковываем кортеж. Убедись, что порядок полей соответствует твоей таблице reports
             (report_id, _, corpus_name, discipline_db, work_type_name, foreman_name, 
@@ -1971,7 +1968,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = []
     if table_name == 'admins':
         query_sql = f"SELECT user_id, first_name, last_name, phone_number, NULL as discipline_name FROM {table_name} ORDER BY first_name, last_name LIMIT %s OFFSET %s"
-        success, users = db_query(query_sql, (USERS_PER_PAGE, offset))
+        users = db_query(query_sql, (USERS_PER_PAGE, offset))
     else:
         query_sql = f"""
             SELECT u.user_id, u.first_name, u.last_name, u.phone_number, d.name as discipline_name
@@ -1982,8 +1979,8 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         users = db_query(query_sql, (USERS_PER_PAGE, offset))
 
-    success, total_users_raw = db_query(f"SELECT COUNT(*) FROM {table_name}")
-    total_users = total_users_raw[0][0] if success and total_users_raw else 0
+    total_users_raw = db_query(f"SELECT COUNT(*) FROM {table_name}")
+    total_users = total_users_raw[0][0] if total_users_raw else 0
     total_pages = math.ceil(total_users / USERS_PER_PAGE) if total_users > 0 else 1
 
     message = f"📜 *Список: {table_info['title']}* (Страница {current_page} из {total_pages})\n\n"
@@ -2072,8 +2069,8 @@ async def admin_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
 
-    success, disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
-    if not success or not disciplines:
+    disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
+    if not disciplines:
         await query.edit_message_text("В системе нет дисциплин для управления отчетами.")
         return ConversationHandler.END
 
@@ -2399,8 +2396,8 @@ async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ФИНАЛЬНАЯ ВЕРСИЯ: 
-    Исправлены все вызовы db_query внутри функции.
+    ФИНАЛЬНАЯ ВЕРСИЯ:
+    Исправлена ошибка экранирования MarkdownV2.
     """
     query = update.callback_query
     
@@ -2415,7 +2412,7 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await query.answer("⏳ Сохраняю...")
 
-    # Шаг 1: Сохранение в БД
+    # Шаг 1: Сохранение в БД (работает)
     update_query = sql.SQL("UPDATE reports SET {} WHERE id = %s").format(
         sql.SQL(', ').join(sql.SQL("{} = %s").format(sql.Identifier(key)) for key in changed_fields)
     )
@@ -2426,55 +2423,66 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text("❌ Произошла ошибка при сохранении в базу данных.")
         return SELECT_FIELD_TO_EDIT
 
-    # Шаг 2: Формирование сообщения
+    # Шаг 2: Формирование сообщения с полной защитой от ошибок Markdown
     final_data_dict = report_data
+    admin_name_raw, _ = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
     
-    # --- ИСПРАВЛЕНИЕ ВСЕХ ВЫЗОВОВ DB_QUERY ---
-    success_admin, admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
-    success_unit, unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
-    success_topic, topic_info = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name = %s", (final_data_dict['discipline_name'],))
-    
-    def safe_escape(text): return escape_markdown(str(text), version=2)
+    def safe_escape(text):
+        return escape_markdown(str(text), version=2)
 
-    admin_name = safe_escape(f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if success_admin and admin_name_raw else "Администратор")
+    admin_name = safe_escape(f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор")
     foreman_name_safe = safe_escape(final_data_dict['foreman_name'])
     corpus_name_safe = safe_escape(final_data_dict['corpus_name'])
     discipline_name_safe = safe_escape(final_data_dict['discipline_name'])
     work_type_safe = safe_escape(final_data_dict['work_type_name'])
     notes_safe = safe_escape(final_data_dict['notes'] or "")
-    unit = safe_escape(unit_of_measure_raw[0][0] if success_unit and unit_of_measure_raw else "")
+    
+    unit_of_measure_raw, _ = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
+    unit = safe_escape(unit_of_measure_raw[0][0] if unit_of_measure_raw else "")
+    
     date_str_safe = safe_escape(final_data_dict['report_date'].strftime('%d.%m.%Y'))
     volume_str_safe = safe_escape(final_data_dict['volume'])
     
+    # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
     report_lines = [
         f"📄 *Отчет от бригадира: {foreman_name_safe}* \\(ID: {report_id}\\)\n",
-        f"▪️ *Корпус:* {corpus_name_safe}", f"▪️ *Дисциплина:* {discipline_name_safe}",
-        f"▪️ *Вид работ:* {work_type_safe}", f"▪️ *Дата:* {date_str_safe}",
-        f"▪️ *Кол\\-во человек:* {final_data_dict['people_count']}",
+        f"▪️ *Корпус:* {corpus_name_safe}",
+        f"▪️ *Дисциплина:* {discipline_name_safe}",
+        f"▪️ *Вид работ:* {work_type_safe}",
+        f"▪️ *Дата:* {date_str_safe}",
+        f"▪️ *Кол\\-во человек:* {final_data_dict['people_count']}", # Экранируем дефис
         f"▪️ *Выполненный объем:* {volume_str_safe} {unit}",
     ]
-    if notes_safe.strip(): report_lines.append(f"▪️ *Примечание:* {notes_safe}")
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
+    if notes_safe.strip():
+        report_lines.append(f"▪️ *Примечание:* {notes_safe}")
 
     status_map = {1: '✅ Согласовано', 0: '⏳ Ожидает', -1: '❌ Отклонено'}
     status_text_safe = safe_escape(status_map.get(final_data_dict['kiok_approved'], 'Неизвестно'))
+    
     edit_time = datetime.now(pytz.timezone('Asia/Tashkent')).strftime('%d.%m.%Y в %H:%M')
     footer = f"Отредактировал: {admin_name} \\({safe_escape(edit_time)}\\)"
+    
     report_lines.extend(["", f"*Статус:* {status_text_safe}", "---", f"_{footer}_"])
     final_text = "\n".join(report_lines)
     
-    if success_topic and topic_info and final_data_dict.get('group_message_id'):
+    topic_info, _ = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name = %s", (final_data_dict['discipline_name'],))
+    if topic_info and final_data_dict.get('group_message_id'):
         chat_id, topic_id = topic_info[0]
         try:
             original_buttons = None
             if final_data_dict['kiok_approved'] == 0:
-                 original_buttons = InlineKeyboardMarkup([
+                original_buttons = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Согласовать", callback_data=f"kiok_approve_{report_id}")],
-                    [InlineKeyboardButton("❌ Отклонить", callback_data=f"kiok_reject_{report_id}")]])
+                    [InlineKeyboardButton("❌ Отклонить", callback_data=f"kiok_reject_{report_id}")]
+                ])
             await context.bot.edit_message_text(
                 chat_id=chat_id, message_id=final_data_dict['group_message_id'],
                 text=final_text, parse_mode='MarkdownV2', reply_markup=original_buttons
             )
-        except Exception as e: logger.error(f"Не удалось обновить сообщение в группе: {e}")
+        except Exception as e:
+            logger.error(f"Не удалось обновить сообщение в группе: {e}")
 
     await query.answer("✅ Сохранено!", show_alert=True)
     
@@ -2794,8 +2802,8 @@ async def handle_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_info['pending_message_ids'] = [text_message.message_id, emoji_message.message_id]
     context.bot_data[user_id_str] = user_info
     
-    success, discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
-    discipline_name_for_text = discipline_name_raw[0][0] if success and discipline_name_raw else "ID: " + str(discipline_id)
+    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
+    discipline_name_for_text = discipline_name_raw[0][0] if discipline_name_raw else "ID: " + str(discipline_id)
 
     role_rus_map = {'manager': 'Руководителя (Ур. 2)', 'foreman': 'Бригадира', 'pto': 'ПТО', 'kiok': 'КИОК'}
     role_rus = role_rus_map.get(role, 'Неизвестно')
@@ -3509,8 +3517,8 @@ async def show_user_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     viewer_id = str(query.from_user.id)
     viewer_role = check_user_role(viewer_id)
     
-    success, user_data = db_query(f"SELECT first_name, last_name FROM {role} WHERE user_id = %s", (user_id_to_edit,))
-    full_name = f"{user_data[0][0]} {user_data[0][1]}" if success and user_data else user_id_to_edit
+    user_data = db_query(f"SELECT first_name, last_name FROM {role} WHERE user_id = %s", (user_id_to_edit,))
+    full_name = f"{user_data[0][0]} {user_data[0][1]}" if user_data else user_id_to_edit
 
     message_text = f"👤 *Редактирование: {full_name}*\n`{user_id_to_edit}`\n\nВыберите действие:"
 
@@ -3550,9 +3558,9 @@ async def show_discipline_change_menu(update: Update, context: ContextTypes.DEFA
     role, user_id_to_edit = parts[2], parts[3]
     
     # 2. Получаем список всех дисциплин из БД
-    success, disciplines_list = db_query("SELECT id, name FROM disciplines")
+    disciplines_list = db_query("SELECT id, name FROM disciplines")
     
-    if not success or not disciplines_list:
+    if not disciplines_list:
         await query.edit_message_text("⚠️ В базе данных не найдено ни одной дисциплины.")
         return
 
@@ -3622,8 +3630,8 @@ async def set_level(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     
     elif new_level == 2:
         context.user_data['edit_user_id'] = user_id_to_edit
-        success, disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
-        if not success or not disciplines:
+        disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
+        if not disciplines:
             await query.edit_message_text("Ошибка: нет дисциплин для назначения.")
             return ConversationHandler.END
         
@@ -3767,8 +3775,8 @@ async def get_corpus_and_ask_work_type(update: Update, context: ContextTypes.DEF
     parts = query.data.split('_')
     selected_corps_id = parts[2] 
 
-    success, corps_name_raw = db_query("SELECT name FROM construction_objects WHERE id = %s", (selected_corps_id,))
-    if not success or not corps_name_raw:
+    corps_name_raw = db_query("SELECT name FROM construction_objects WHERE id = %s", (selected_corps_id,))
+    if not corps_name_raw:
         await query.edit_message_text(text="⚠️ *Ошибка:* Выбранный корпус не найден. Обратитесь к администратору.")
         return ConversationHandler.END
     selected_corps_name = corps_name_raw[0][0]
@@ -3801,14 +3809,14 @@ async def show_work_types_page(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text="⚠️ *Ошибка:* Не удалось определить вашу дисциплину. Обратитесь к администратору.", parse_mode='Markdown')
         return ConversationHandler.END
 
-    success, work_types_raw = db_query("""
+    work_types_raw = db_query("""
      SELECT wt.id, wt.name FROM work_types wt
      JOIN disciplines d ON wt.discipline_id = d.id
      WHERE d.name = %s
      ORDER BY wt.display_order, wt.name
      """, (discipline_name,))
 
-    if not success or not work_types_raw:
+    if not work_types_raw:
         text = get_text('report_error_no_work_types', lang).format(discipline=discipline_name)
         user_role_check = check_user_role(user_id)
         # Кнопка "Назад" для админа и обычного пользователя ведет в разные места
@@ -3885,8 +3893,8 @@ async def get_work_type_and_ask_count(update: Update, context: ContextTypes.DEFA
 
     selected_work_type_id = query.data.split('_')[2]
    
-    success, work_type_info_raw = db_query("SELECT name, unit_of_measure FROM work_types WHERE id = %s", (selected_work_type_id,))
-    if not success or not work_type_info_raw:
+    work_type_info_raw = db_query("SELECT name, unit_of_measure FROM work_types WHERE id = %s", (selected_work_type_id,))
+    if not work_type_info_raw:
         await query.edit_message_text(text="⚠️ *Ошибка:* Выбранный вид работ не найден.")
         return ConversationHandler.END
     
@@ -3931,17 +3939,17 @@ async def get_people_count_and_ask_volume(update: Update, context: ContextTypes.
         return GETTING_PEOPLE_COUNT
 
     today_str = date.today().strftime('%Y-%m-%d')
-    success_roster, roster_info = db_query("SELECT total_people FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
+    roster_info = db_query("SELECT total_people FROM daily_rosters WHERE brigade_user_id = %s AND roster_date = %s", (user_id, today_str))
     
-    if not success_roster or not roster_info:
+    if not roster_info:
         keyboard = [[InlineKeyboardButton(get_text('main_menu_title', lang), callback_data="go_back_to_main_menu")]]
         await context.bot.send_message(chat_id, get_text('report_error_no_roster', lang), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         return ConversationHandler.END
 
     total_declared = roster_info[0][0]
     brigade_name_for_query = user_role.get('brigadeName') or f"Бригада пользователя {user_id}"
-    success_assigned, assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name_for_query, today_str))
-    total_assigned = assigned_info[0][0] or 0 if success_assigned and assigned_info else 0
+    assigned_info = db_query("SELECT SUM(people_count) FROM reports WHERE foreman_name = %s AND report_date = %s", (brigade_name_for_query, today_str))
+    total_assigned = assigned_info[0][0] or 0 if assigned_info else 0
     available_pool = total_declared - total_assigned
     
     if people_count > available_pool:
@@ -4097,7 +4105,7 @@ async def submit_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     report_date_db = report_data.get('report_date_db')
     notes = report_data.get('notes')
 
-    success_insert, report_id = db_query(
+    report_id = db_query(
         """
         INSERT INTO reports (timestamp, corpus_name, discipline_name, work_type_name, foreman_name, people_count, volume, report_date, notes)
         VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
@@ -4105,21 +4113,21 @@ async def submit_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         (corpus_name, discipline_name, work_type_name, foreman_name, people_count, volume, report_date_db, notes)
     )
 
-    if not success_insert or not report_id:
+    if not report_id:
         await query.edit_message_text(get_text('report_error_db_save', lang), parse_mode="Markdown")
         return ConversationHandler.END
         
     logger.info(f"Создан отчет в БД с ID: {report_id}")
 
-    success_map, mapping = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name ILIKE %s", (discipline_name,))
+    mapping = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name ILIKE %s", (discipline_name,))
     
-    if success_map and mapping:
+    if mapping:
         chat_id, topic_id = mapping[0]
         
         # Текст отчета, который уходит в общую группу, оставляем на русском для единообразия
         report_date_display = datetime.strptime(report_date_db, "%Y-%m-%d").strftime("%d.%m.%Y")
-        success_unit, unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (work_type_name,))
-        unit_of_measure = unit_of_measure_raw[0][0] if success_unit and unit_of_measure_raw and unit_of_measure_raw[0][0] else ""
+        unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (work_type_name,))
+        unit_of_measure = unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else ""
 
         report_lines = [
             f"📄 *Новый отчет от бригадира: {foreman_name}* (ID: {report_id})\n",
@@ -4783,13 +4791,13 @@ async def handle_kiok_decision(update: Update, context: ContextTypes.DEFAULT_TYP
     user_role = check_user_role(user_id)
     
     # Запрашиваем всю информацию об отчете одним запросом
-    success, report_info_raw = db_query(
+    report_info_raw = db_query(
         "SELECT r.discipline_name, tm.chat_id, r.group_message_id, r.report_date, r.foreman_name, r.corpus_name, r.work_type_name, r.people_count, r.volume, r.notes "
         "FROM reports r LEFT JOIN topic_mappings tm ON r.discipline_name = tm.discipline_name WHERE r.id = %s",
         (report_id,)
     )
 
-    if not success or not report_info_raw:
+    if not report_info_raw:
         await query.answer("⚠️ Ошибка: отчет не найден. Возможно, он был удален.", show_alert=True)
         return
     
@@ -4827,9 +4835,9 @@ async def handle_kiok_decision(update: Update, context: ContextTypes.DEFAULT_TYP
         LIMIT 1;
     """
     params = (user_id, user_id, user_id, user_id)
-    success_user, user_data = db_query(approver_name_query, params)
+    user_data = db_query(approver_name_query, params)
 
-    if success_user and user_data and user_data[0]:
+    if user_data and user_data[0]:
         first_name, last_name = user_data[0]
         approver_name = f"{first_name or ''} {last_name or ''}".strip()
     else:
@@ -4883,15 +4891,25 @@ async def handle_kiok_decision(update: Update, context: ContextTypes.DEFAULT_TYP
 # --- ЛОКАЛИЗАЦИЯ ЯЗЫКОВ ---
 
 def get_user_language(user_id: str) -> str:
-    """Получает код языка пользователя (исправленная версия)."""
+    """Получает код языка пользователя с ОТЛАДКОЙ."""
+    user_id_str = str(user_id)
+    logger.info(f"[DEBUG] --- Начинаю поиск языка для {user_id_str} ---")
     tables = ['admins', 'managers', 'brigades', 'pto', 'kiok']
     for table in tables:
-        # ИСПРАВЛЕНО: Распаковываем ответ от db_query
-        success_check, table_exists_data = db_query(f"SELECT to_regclass('public.{table}')")
-        if success_check and table_exists_data and table_exists_data[0][0]:
-            success_lang, lang_code_data = db_query(f"SELECT language_code FROM {table} WHERE user_id = %s", (str(user_id),))
-            if success_lang and lang_code_data and lang_code_data[0] and lang_code_data[0][0]:
-                return lang_code_data[0][0]
+        table_exists = db_query(f"SELECT to_regclass('public.{table}')")
+        if table_exists and table_exists[0][0]:
+            col_check = db_query(f"SELECT 1 FROM information_schema.columns WHERE table_name='{table}' AND column_name='language_code' LIMIT 1")
+            if col_check:
+                logger.info(f"[DEBUG] Проверяю таблицу {table} для {user_id_str}...")
+                lang_code_raw = db_query(f"SELECT language_code FROM {table} WHERE user_id = %s", (user_id_str,))
+                
+                # Проверяем, что запрос что-то вернул и значение не пустое
+                if lang_code_raw and lang_code_raw[0] and lang_code_raw[0][0]:
+                    found_lang = lang_code_raw[0][0]
+                    logger.info(f"[DEBUG] НАЙДЕН ЯЗЫК! В таблице {table} для {user_id_str} стоит '{found_lang}'. Возвращаю его.")
+                    return found_lang
+    
+    logger.info(f"[DEBUG] Язык не найден ни в одной таблице. Возвращаю 'ru' по умолчанию для {user_id_str}.")
     return 'ru'
 def update_user_language(user_id: str, lang_code: str):
     """Обновляет язык пользователя с ОТЛАДКОЙ."""
