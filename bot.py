@@ -2287,8 +2287,9 @@ async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ:
-    Сохраняет все изменения в БД и обновляет сообщение в группе.
+    ФИНАЛЬНАЯ ВЕРСИЯ:
+    Сохраняет все изменения в БД и обновляет сообщение в группе, используя
+    безопасную маркировку эмодзи.
     """
     query = update.callback_query
     await query.answer()
@@ -2299,38 +2300,46 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     report_id = report_data['id']
 
     if not changed_fields:
-        await query.edit_message_text("Вы ничего не изменили. Сохранение отменено.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"admin_brig_{context.user_data['admin_edit_brigade_id']}")]
-        ]))
+        # Возвращаем пользователя в меню просмотра отчетов бригады
+        await query.edit_message_text("Вы ничего не изменили. Сохранение отменено.", 
+                                      reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"admin_brig_{context.user_data['admin_edit_brigade_id']}")]])
+                                     )
         context.user_data.clear()
         return ConversationHandler.END
 
     await query.edit_message_text(f"⏳ Сохраняю изменения для отчета ID {report_id}...")
 
-    # 1. Сохраняем в БД
+    # 1. Сохраняем в БД (этот блок работает корректно)
     update_query = sql.SQL("UPDATE reports SET {} WHERE id = %s").format(
         sql.SQL(', ').join(sql.SQL("{} = %s").format(sql.Identifier(key)) for key in changed_fields)
     )
     params = [report_data[key] for key in changed_fields] + [report_id]
     db_query(update_query, tuple(params))
     
-    # 2. Обновляем сообщение в группе
-    final_data_dict = dict(report_data) # Используем данные из context
+    # 2. Формируем новое, безопасное сообщение для группы
+    final_data_dict = dict(report_data)
     admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
     admin_name = f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор"
     
     unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
     unit = unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else ""
 
+    # --- ВОТ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ---
+    def marker(field_name):
+        return "✏️" if field_name in changed_fields else "▪️"
+
     report_lines = [
         f"📄 *Отчет от бригадира: {final_data_dict['foreman_name']}* (ID: {report_id})\n",
-        f"▪️ *Корпус:* {final_data_dict['corpus_name']}",
-        f"▪️ *Вид работ:* {final_data_dict['work_type_name']}",
-        f"▪️ *Дата:* {final_data_dict['report_date'].strftime('%d.%m.%Y')}",
-        f"▪️ *Кол-во человек:* {final_data_dict['people_count']}",
-        f"▪️ *Выполненный объем:* {final_data_dict['volume']} {unit}",
+        f"{marker('corpus_name')} *Корпус:* {final_data_dict['corpus_name']}",
+        f"{marker('work_type_name')} *Вид работ:* {final_data_dict['work_type_name']}",
+        f"{marker('report_date')} *Дата:* {final_data_dict['report_date'].strftime('%d.%m.%Y')}",
+        f"{marker('people_count')} *Кол-во человек:* {final_data_dict['people_count']}",
+        f"{marker('volume')} *Объем:* {final_data_dict['volume']} {unit}",
     ]
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
     if final_data_dict['notes']:
-        report_lines.append(f"▪️ *Примечание:* {final_data_dict['notes']}")
+        report_lines.append(f"{marker('notes')} *Примечание:* {final_data_dict['notes']}")
 
     status_map = {1: '✅ Согласовано', 0: '⏳ Ожидает', -1: '❌ Отклонено'}
     report_lines.append(f"\n*Статус:* {status_map.get(final_data_dict['kiok_approved'], 'Неизвестно')}")
@@ -2341,11 +2350,12 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if topic_info and final_data_dict['group_message_id']:
         chat_id, topic_id = topic_info[0]
         try:
-            # Для надежности используем тот же reply_markup, что и был
-            original_buttons = InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ Согласовать", callback_data=f"kiok_approve_{report_id}"),
-                InlineKeyboardButton("❌ Отклонить", callback_data=f"kiok_reject_{report_id}")
-            ]]) if final_data_dict['kiok_approved'] == 0 else None
+            original_buttons = None
+            if final_data_dict['kiok_approved'] == 0:
+                 original_buttons = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("✅ Согласовать", callback_data=f"kiok_approve_{report_id}"),
+                    InlineKeyboardButton("❌ Отклонить", callback_data=f"kiok_reject_{report_id}")
+                ]])
 
             await context.bot.edit_message_text(
                 chat_id=chat_id, message_id=final_data_dict['group_message_id'],
@@ -2421,6 +2431,7 @@ async def display_edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=last_bot_msg_id)
             except Exception: pass
         await context.bot.send_message(update.effective_chat.id, final_text, reply_markup=reply_markup, parse_mode="Markdown")
+
 # --- ЛОГИКА РЕГИСТРАЦИИ ---
 
 async def start_auth(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
