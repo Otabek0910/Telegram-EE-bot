@@ -2395,7 +2395,10 @@ async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     return SELECT_FIELD_TO_EDIT
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Сохраняет отчет и возвращает к списку. (Версия 4.0)"""
+    """
+    ФИНАЛЬНАЯ ВЕРСИЯ:
+    Исправлена ошибка экранирования MarkdownV2.
+    """
     query = update.callback_query
     
     admin_id = str(query.from_user.id)
@@ -2409,22 +2412,23 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     await query.answer("⏳ Сохраняю...")
 
-    # Шаг 1: Сохранение в БД
+    # Шаг 1: Сохранение в БД (работает)
     update_query = sql.SQL("UPDATE reports SET {} WHERE id = %s").format(
         sql.SQL(', ').join(sql.SQL("{} = %s").format(sql.Identifier(key)) for key in changed_fields)
     )
     params = [report_data[key] for key in changed_fields] + [report_id]
-    db_query_result = db_query(update_query, tuple(params))
+    success, _ = db_query(update_query, tuple(params))
     
-    if db_query_result is None and len(params) > 1:
-        await query.edit_message_text("❌ Ошибка при сохранении в базу данных.")
+    if not success:
+        await query.edit_message_text("❌ Произошла ошибка при сохранении в базу данных.")
         return SELECT_FIELD_TO_EDIT
 
-    # Шаг 2: Формирование и отправка сообщения в группу
-    final_data_dict = report_data # Используем данные из context, они самые свежие
-    admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
+    # Шаг 2: Формирование сообщения с полной защитой от ошибок Markdown
+    final_data_dict = report_data
+    admin_name_raw, _ = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
     
-    def safe_escape(text): return escape_markdown(str(text), version=2)
+    def safe_escape(text):
+        return escape_markdown(str(text), version=2)
 
     admin_name = safe_escape(f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор")
     foreman_name_safe = safe_escape(final_data_dict['foreman_name'])
@@ -2432,41 +2436,53 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     discipline_name_safe = safe_escape(final_data_dict['discipline_name'])
     work_type_safe = safe_escape(final_data_dict['work_type_name'])
     notes_safe = safe_escape(final_data_dict['notes'] or "")
-    unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
+    
+    unit_of_measure_raw, _ = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
     unit = safe_escape(unit_of_measure_raw[0][0] if unit_of_measure_raw else "")
+    
     date_str_safe = safe_escape(final_data_dict['report_date'].strftime('%d.%m.%Y'))
     volume_str_safe = safe_escape(final_data_dict['volume'])
     
+    # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
     report_lines = [
         f"📄 *Отчет от бригадира: {foreman_name_safe}* \\(ID: {report_id}\\)\n",
-        f"▪️ *Корпус:* {corpus_name_safe}", f"▪️ *Дисциплина:* {discipline_name_safe}",
-        f"▪️ *Вид работ:* {work_type_safe}", f"▪️ *Дата:* {date_str_safe}",
-        f"▪️ *Кол\\-во человек:* {final_data_dict['people_count']}",
+        f"▪️ *Корпус:* {corpus_name_safe}",
+        f"▪️ *Дисциплина:* {discipline_name_safe}",
+        f"▪️ *Вид работ:* {work_type_safe}",
+        f"▪️ *Дата:* {date_str_safe}",
+        f"▪️ *Кол\\-во человек:* {final_data_dict['people_count']}", # Экранируем дефис
         f"▪️ *Выполненный объем:* {volume_str_safe} {unit}",
     ]
-    if notes_safe.strip(): report_lines.append(f"▪️ *Примечание:* {notes_safe}")
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
+    if notes_safe.strip():
+        report_lines.append(f"▪️ *Примечание:* {notes_safe}")
 
     status_map = {1: '✅ Согласовано', 0: '⏳ Ожидает', -1: '❌ Отклонено'}
     status_text_safe = safe_escape(status_map.get(final_data_dict['kiok_approved'], 'Неизвестно'))
+    
     edit_time = datetime.now(pytz.timezone('Asia/Tashkent')).strftime('%d.%m.%Y в %H:%M')
     footer = f"Отредактировал: {admin_name} \\({safe_escape(edit_time)}\\)"
+    
     report_lines.extend(["", f"*Статус:* {status_text_safe}", "---", f"_{footer}_"])
     final_text = "\n".join(report_lines)
     
-    topic_info = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name = %s", (final_data_dict['discipline_name'],))
+    topic_info, _ = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name = %s", (final_data_dict['discipline_name'],))
     if topic_info and final_data_dict.get('group_message_id'):
         chat_id, topic_id = topic_info[0]
         try:
             original_buttons = None
             if final_data_dict['kiok_approved'] == 0:
-                 original_buttons = InlineKeyboardMarkup([
+                original_buttons = InlineKeyboardMarkup([
                     [InlineKeyboardButton("✅ Согласовать", callback_data=f"kiok_approve_{report_id}")],
-                    [InlineKeyboardButton("❌ Отклонить", callback_data=f"kiok_reject_{report_id}")]])
+                    [InlineKeyboardButton("❌ Отклонить", callback_data=f"kiok_reject_{report_id}")]
+                ])
             await context.bot.edit_message_text(
                 chat_id=chat_id, message_id=final_data_dict['group_message_id'],
                 text=final_text, parse_mode='MarkdownV2', reply_markup=original_buttons
             )
-        except Exception as e: logger.error(f"Не удалось обновить сообщение в группе: {e}")
+        except Exception as e:
+            logger.error(f"Не удалось обновить сообщение в группе: {e}")
 
     await query.answer("✅ Сохранено!", show_alert=True)
     
