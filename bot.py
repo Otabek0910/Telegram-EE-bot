@@ -2380,8 +2380,8 @@ async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ОКОНЧАТЕЛЬНО ИСПРАВЛЕННАЯ ВЕРСИЯ:
-    Исправлена синтаксическая ошибка в f-строке для даты.
+    ОКОНЧАТЕЛЬНО ИСПРАВЛЕННАЯ ВЕРСЯ:
+    Исправлена синтаксическая ошибка в f-строке для объема.
     """
     query = update.callback_query
     await query.answer()
@@ -2423,16 +2423,18 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     def marker(field_name):
         return "✏️" if field_name in changed_fields else "▪️"
 
-    # --- ВОТ ИСПРАВЛЕННЫЙ КОД ---
+    # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+    # Приводим дату и объем к строке и затем безопасно заменяем точки
+    date_str_safe = final_data_dict['report_date'].strftime('%d.%m.%Y').replace('.', r'\.')
+    volume_str_safe = str(final_data_dict['volume']).replace('.', r'\.')
+    
     report_lines = [
         f"📄 *Отчет от бригадира: {foreman_name_safe}* \\(ID: {report_id}\\)\n",
         f"{marker('corpus_name')} *Корпус:* {corpus_name_safe}",
         f"{marker('work_type_name')} *Вид работ:* {work_type_safe}",
-        # Правильное экранирование точек внутри f-строки
-        f"{marker('report_date')} *Дата:* {final_data_dict['report_date'].strftime('%d\\.%m\\.%Y')}",
+        f"{marker('report_date')} *Дата:* {date_str_safe}",
         f"{marker('people_count')} *Кол-во человек:* {final_data_dict['people_count']}",
-        # str(float) -> '123.45', .replace() экранирует точку
-        f"{marker('volume')} *Объем:* {str(final_data_dict['volume']).replace('.', r'\\.')} {unit}",
+        f"{marker('volume')} *Объем:* {volume_str_safe} {unit}",
     ]
     # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
