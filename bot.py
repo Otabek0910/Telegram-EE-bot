@@ -1106,7 +1106,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
             brigade_details_query = """
-                WITH reported_today AS (
+                 WITH reported_today AS (
                     SELECT DISTINCT foreman_name FROM reports WHERE report_date = CURRENT_DATE
                 )
                 SELECT 
@@ -1116,7 +1116,6 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 FROM disciplines d
                 LEFT JOIN brigades b ON b.discipline = d.id
                 LEFT JOIN reported_today rt ON b.brigade_name = rt.foreman_name
-                WHERE b.user_id IS NOT NULL
                 GROUP BY d.name
                 ORDER BY d.name;
             """
@@ -1223,10 +1222,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ v2:
-    Показывает СВОДНУЮ информацию (сгруппированную по видам работ) и кнопки управления датой.
-    """
+   
     query = update.callback_query
     
     selected_date = date.today()
@@ -1345,9 +1341,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
            # === ИЗМЕНЕНИЕ: Запрашиваем ID и NAME, в кнопку передаем ID ===
            disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
            if disciplines:
-             keyboard_buttons.append([InlineKeyboardButton("--- Графики по дисциплинам ---", callback_data="noop")])
-             for disc_id, disc_name in disciplines:
-                 keyboard_buttons.append([InlineKeyboardButton(f"📈 {get_data_translation(disc_name, lang)}", callback_data=f"gen_overview_chart_{disc_id}_{date_str_for_callback}")])
+              for disc_id, disc_name in disciplines:
+                 keyboard_buttons.append([InlineKeyboardButton(f"{get_data_translation(disc_name, lang)}", callback_data=f"gen_overview_chart_{disc_id}_{date_str_for_callback}")])
 
         elif user_role.get('isPto') or user_role.get('managerLevel') == 2:
            user_discipline_name = user_role.get('discipline')
@@ -1475,7 +1470,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         plt.close(fig)
 
         # 5. Формируем подпись с примечанием
-        caption_text = f"📈 *Анализ выработки для дисциплины «{get_data_translation(discipline_name, lang)}»*"
+        caption_text = f"*Анализ выработки для дисциплины «{get_data_translation(discipline_name, lang)}»*"
         if prochie_people_count > 0:
             caption_text += f"\n\n*Примечание:* на прочих работах без нормы было задействовано *{prochie_people_count}* чел."
         
@@ -1500,6 +1495,8 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     finally:
         if 'chart_path' in locals() and os.path.exists(chart_path):
             os.remove(chart_path)
+            
+    return SELECTING_OVERVIEW_ACTION
 
 async def report_overview_chart_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
