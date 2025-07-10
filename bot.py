@@ -1357,11 +1357,12 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         await wait_msg.edit_text(f"❗ *{get_text('error_generic', lang)}*")
         return ConversationHandler.END
 
-async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    НОВАЯ ВЕРСИЯ:
-    Генерирует и отправляет улучшенную диаграмму 'План/Факт' с метками,
-    примечанием о прочих работах и количеством человек.
+    ИСПРАВЛЕННАЯ ВЕРСИЯ v2:
+    Генерирует и отправляет улучшенную диаграмму 'План/Факт'.
+    Корректно разбирает callback_data, использует дату из него, а не из контекста,
+    и возвращает состояние для продолжения диалога.
     """
     query = update.callback_query
     await query.answer()
@@ -1369,22 +1370,35 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     user_id = str(query.from_user.id)
     lang = get_user_language(user_id)
 
-    parts = query.data.split('_')
-    discipline_id = int(parts[3])
+    # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
+    # Разбираем callback вида "gen_overview_chart_ID_YYYY-MM-DD"
+    try:
+        # Используем rsplit, чтобы отделить дату, которая может содержать дефисы
+        base_callback, date_str = query.data.rsplit('_', 1)
+        discipline_id = int(base_callback.split('_')[-1])
+        
+        # Проверяем формат даты
+        selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except (ValueError, IndexError):
+        logger.error(f"Критическая ошибка разбора callback_data в generate_overview_chart: {query.data}")
+        await query.edit_message_text("❌ Произошла внутренняя ошибка. Не удалось разобрать данные для графика.")
+        return SELECTING_OVERVIEW_ACTION
+
     discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
     if not discipline_name_raw:
         await query.edit_message_text("❌ Ошибка: Дисциплина с таким ID не найдена.")
-        return
+        return SELECTING_OVERVIEW_ACTION
     discipline_name = discipline_name_raw[0][0]
     
-    # Получаем дату из контекста, сохраненную на предыдущем шаге
-    date_str = context.user_data.get('overview_date')
-    selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    # Сохраняем дату в контекст на случай, если она понадобится для кнопки "Назад"
+    context.user_data['overview_date'] = date_str
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
 
+    # Редактируем существующее сообщение, чтобы показать статус загрузки
     if query.message:
-        await query.message.delete()
-    wait_msg = await context.bot.send_message(query.message.chat_id, f"⏳ {get_text('loading_please_wait', lang)}")
-    chart_path = None # Инициализируем переменную
+        await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
+    
+    chart_path = None
 
     try:
         engine = create_engine(DATABASE_URL)
@@ -1406,9 +1420,8 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]),
                 parse_mode="Markdown"
             )
-            return
+            return SELECTING_OVERVIEW_ACTION
 
-        # 1. Отделяем "Прочие работы" от основных
         df['is_prochie'] = df['work_type_name'].str.contains('Прочие', case=False, na=False) | df['norm_per_unit'].isnull()
         prochie_df = df[df['is_prochie'] == True]
         main_df = df[df['is_prochie'] == False]
@@ -1421,9 +1434,8 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]),
                 parse_mode="Markdown"
             )
-            return
+            return SELECTING_OVERVIEW_ACTION
 
-        # 2. Считаем план/факт и агрегируем данные
         main_df['plan'] = main_df['people_count'] * main_df['norm_per_unit']
         df_chart = main_df.groupby('work_type_name').agg(
             План=('plan', 'sum'), 
@@ -1431,64 +1443,54 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
             Люди=('people_count', 'sum')
         ).reset_index()
 
-        # Создаем красивые подписи для оси X
         df_chart['x_label'] = df_chart.apply(
             lambda row: f"{row['work_type_name']}\n({int(row['Люди'])} чел.)", axis=1
         )
 
-        # 3. Рисуем график
         plt.style.use('seaborn-v0_8-darkgrid')
         fig, ax = plt.subplots(figsize=(12, 8))
-
         df_chart.plot(x='x_label', y=['План', 'Факт'], kind='bar', ax=ax, width=0.7, legend=True)
         
-        # 4. Добавляем значения над колонками
         for bar in ax.patches:
             ax.annotate(f'{bar.get_height():.1f}',
                         (bar.get_x() + bar.get_width() / 2, bar.get_height()),
-                        ha='center', va='center',
-                        size=9, xytext=(0, 8),
-                        textcoords='offset points',
-                        fontweight='bold')
+                        ha='center', va='center', size=9, xytext=(0, 8),
+                        textcoords='offset points', fontweight='bold')
 
         ax.set_title(f"Выработка по дисциплине «{discipline_name}» за {selected_date.strftime('%d.%m.%Y')}", fontsize=16, fontweight='bold')
         ax.set_ylabel("Объем работ", fontsize=12)
         ax.set_xlabel("")
         ax.tick_params(axis='x', labelsize=10, rotation=15, ha="right")
         ax.legend(fontsize=12)
-        
-        # Увеличиваем верхний предел оси Y, чтобы метки не обрезались
         ax.set_ylim(top=ax.get_ylim()[1] * 1.15)
-
         plt.tight_layout(pad=2.0)
         
         chart_path = os.path.join(DASHBOARD_DIR, f'chart_{user_id}.png')
         plt.savefig(chart_path)
         plt.close(fig)
 
-        # 5. Формируем подпись с примечанием
         safe_discipline_name = escape_markdown(get_data_translation(discipline_name, lang), version=2)
         caption_text = f"*Анализ выработки для дисциплины «{safe_discipline_name}»*"
         if prochie_people_count > 0:
             caption_text += f"\n\n*Примечание:* на прочих работах было задействовано *{prochie_people_count}* чел."
         
-        # 6. Отправляем фото и удаляем временное сообщение
+        # Удаляем сообщение "Пожалуйста, подождите"
+        await query.message.delete()
+        
         with open(chart_path, 'rb') as chart_file:
             await context.bot.send_photo(
                 chat_id=query.message.chat_id,
                 photo=chart_file,
                 caption=caption_text,
-                parse_mode='MarkdownV2', # Используем MarkdownV2
+                parse_mode='MarkdownV2',
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("◀️ Назад к сводке", callback_data=f"report_overview_date_{date_str}")
                 ]])
             )
-        # Удаляем сообщение "Пожалуйста, подождите"
-        await wait_msg.delete()
 
     except Exception as e:
         logger.error(f"Ошибка при создании графика: {e}")
-        await wait_msg.edit_text(f"❌ {get_text('error_generic', lang)}")
+        await query.message.edit_text(f"❌ {get_text('error_generic', lang)}")
     finally:
         if chart_path and os.path.exists(chart_path):
             os.remove(chart_path)
