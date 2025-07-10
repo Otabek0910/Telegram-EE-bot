@@ -234,6 +234,12 @@ TRANSLATIONS = {
         'dashboard_caption_title': 'Дашборд по дисциплине «{}»',
         'data_period': 'Данные за период с {} по {}',
 
+        'total_people_short': 'Всего людей',
+'average_output_short': 'Средняя выработка',
+'work_details_label': 'Детализация по работам:',
+'other_works_label': 'Прочие работы',
+'no_reports_for_period': 'Нет отчетов за выбранный период',
+
     },
     'en': {
         # --- General ---
