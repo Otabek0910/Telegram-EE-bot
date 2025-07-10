@@ -1454,7 +1454,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         ax.set_title(f"Выработка по дисциплине «{discipline_name}» за {selected_date.strftime('%d.%m.%Y')}", fontsize=16, fontweight='bold')
         ax.set_ylabel("Объем работ", fontsize=12)
         ax.set_xlabel("")
-        ax.tick_params(axis='x', labelsize=10, rotation=15, ha="right")
+        ax.tick_params(axis='x', labelsize=10, rotation=15)
         ax.legend(fontsize=12)
         ax.set_ylim(top=ax.get_ylim()[1] * 1.15)
         plt.tight_layout(pad=2.0)
