@@ -2410,9 +2410,9 @@ async def process_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ:
+    ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ v2:
     Корректно сохраняет изменения в БД, обновляет сообщение в группе КИОК
-    с правильным форматированием MarkdownV2 и возвращает к списку отчетов
+    с гарантированно правильным форматированием MarkdownV2 и возвращает к списку отчетов
     на правильную дату.
     """
     query = update.callback_query
@@ -2442,18 +2442,18 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text("❌ Произошла ошибка при сохранении в базу данных.")
         return SELECT_FIELD_TO_EDIT
 
-    # Шаг 2: Получаем актуальные данные для формирования сообщения
-    # (На случай, если понадобятся связанные данные)
-    final_data_dict = report_data 
+    # Шаг 2: Формирование сообщения с полной защитой от ошибок Markdown
+    final_data_dict = report_data
     
-
     def safe_escape(text):
         if text is None:
             return ""
+        # Экранируем все зарезервированные символы
         return escape_markdown(str(text), version=2)
 
     admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
     admin_name = safe_escape(f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор")
+    
     foreman_name_safe = safe_escape(final_data_dict['foreman_name'])
     corpus_name_safe = safe_escape(final_data_dict['corpus_name'])
     discipline_name_safe = safe_escape(final_data_dict['discipline_name'])
@@ -2466,10 +2466,6 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     date_str_safe = safe_escape(final_data_dict['report_date'].strftime('%d.%m.%Y'))
     volume_str_safe = safe_escape(str(final_data_dict['volume']))
     people_count_safe = final_data_dict['people_count']
-    if people_count_safe is None:
-        people_count_safe = "не указано"
-    else:
-        people_count_safe = safe_escape(str(people_count_safe))
 
     report_lines = [
         f"📄 *Отчет от бригадира: {foreman_name_safe}* \\(ID: {report_id}\\)\n",
@@ -2481,6 +2477,7 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"▪️ *Кол\\-во человек:* {people_count_safe}",
         f"▪️ *Выполненный объем:* {volume_str_safe} {unit}",
     ]
+
     if notes_safe.strip():
         report_lines.append(f"▪️ *Примечание:* {notes_safe}")
 
@@ -2490,24 +2487,9 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     edit_time = safe_escape(datetime.now(pytz.timezone('Asia/Tashkent')).strftime('%d.%m.%Y в %H:%M'))
     footer = f"Отредактировал: {admin_name} \\({edit_time}\\)"
     
+    # === ИСПРАВЛЕНИЕ: Убираем разделитель '---', который тоже может вызывать проблемы ===
     report_lines.extend(["\n", f"*Статус:* {status_text_safe}", f"_{footer}_"])
     final_text = "\n".join(report_lines)
-    final_text = final_text.replace('_', '\\_')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('*', '\\*')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('`', '\\`')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('[', '\\[')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace(']', '\\]')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('(', '\\(')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace(')', '\\)')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('~', '\\~')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('>', '\\>')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('#', '\\#')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('+', '\\+')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('=', '\\=')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('|', '\\|')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('.', '\\.')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('!', '\\!')  # Экранируем символы MarkdownV2
-    final_text = final_text.replace('^', '\\^')  # Экранируем символы MarkdownV2
     
     # Шаг 3: Обновляем сообщение в группе
     topic_info_raw = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name = %s", (final_data_dict['discipline_name'],))
@@ -2531,8 +2513,8 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await query.message.reply_text(f"⚠️ Не удалось обновить сообщение в группе КИОК. Ошибка: {e}")
 
     await query.answer("✅ Сохранено!", show_alert=True)
-     
-     # Шаг 4: Очистка и возврат
+    
+    # Шаг 4: Очистка и возврат
     context.user_data.pop('edit_report_data', None)
     context.user_data.pop('changed_fields', None)
     
