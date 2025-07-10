@@ -1105,25 +1105,37 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-            brigade_counts_raw = db_query("""
-                SELECT d.name, COUNT(b.user_id) 
-                FROM brigades b 
-                JOIN disciplines d ON b.discipline = d.id 
-                GROUP BY d.name ORDER BY d.name
-            """)
+            brigade_details_query = """
+                WITH reported_today AS (
+                    SELECT DISTINCT foreman_name FROM reports WHERE report_date = CURRENT_DATE
+                )
+                SELECT 
+                    d.name,
+                    COUNT(b.user_id) as total_brigades,
+                    COUNT(rt.foreman_name) AS reported_count
+                FROM disciplines d
+                LEFT JOIN brigades b ON b.discipline = d.id
+                LEFT JOIN reported_today rt ON b.brigade_name = rt.foreman_name
+                WHERE b.user_id IS NOT NULL
+                GROUP BY d.name
+                ORDER BY d.name;
+            """
+            brigade_counts_raw = db_query(brigade_details_query)
             
-            total_brigades = sum(count for _, count in brigade_counts_raw) if brigade_counts_raw else 0
+            total_brigades = sum(total for _, total, _ in brigade_counts_raw) if brigade_counts_raw else 0
             
             brigade_details_lines = []
             if brigade_counts_raw:
-                for disc_name, count in brigade_counts_raw:
-                    brigade_details_lines.append(f"    - {get_data_translation(disc_name, lang)}: *{count}*")
-
+                for disc_name, total, reported in brigade_counts_raw:
+                    line = f"    - {get_data_translation(disc_name, lang)}: *{total}* (сдали отчет: *{reported}*)"
+                    brigade_details_lines.append(line)
+            
             message_text_intro = (
                 f"📊 *{get_text('report_menu_summary_title', lang).format(period=period_text)}*\n\n"
                 f"▪️ {get_text('total_brigades_in_system', lang)} *{total_brigades}*\n"
-                + "\n".join(brigade_details_lines) # Добавляем детализацию
+                + "\n".join(brigade_details_lines)
             )
+            # === КОНЕЦ ИЗМЕНЕНИЯ ===
             final_params = tuple(date_params)
             role_filter_sql = ""
         
@@ -1161,7 +1173,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         pending = status_counts.get(0, 0)
 
         message_text = (
-            message_text_intro +
+            message_text_intro + "\n" +
             f"▪️ {get_text('reports_for_period', lang)} *{total_reports}*\n"
             f"    - {get_text('reports_approved', lang)} *{approved}*\n"
             f"    - {get_text('reports_rejected', lang)} *{rejected}*\n"
@@ -1330,19 +1342,21 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
             # Для Админов/Рук. 1 ур. - сразу список дисциплин для графика
         if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-            disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
-            if disciplines:
-                 keyboard_buttons.append([InlineKeyboardButton("--- Графики по дисциплинам ---", callback_data="noop")])
-                 for name, in disciplines:
-                 # Кнопка сразу вызывает генератор графика
-                     keyboard_buttons.append([InlineKeyboardButton(f"📈 {get_data_translation(name, lang)}", callback_data=f"gen_overview_chart_{name}_{date_str_for_callback}")])
+           # === ИЗМЕНЕНИЕ: Запрашиваем ID и NAME, в кнопку передаем ID ===
+           disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
+           if disciplines:
+             keyboard_buttons.append([InlineKeyboardButton("--- Графики по дисциплинам ---", callback_data="noop")])
+             for disc_id, disc_name in disciplines:
+                 keyboard_buttons.append([InlineKeyboardButton(f"📈 {get_data_translation(disc_name, lang)}", callback_data=f"gen_overview_chart_{disc_id}_{date_str_for_callback}")])
 
-           # Для ПТО/Рук. 2 ур. - одна кнопка для их дисциплины
         elif user_role.get('isPto') or user_role.get('managerLevel') == 2:
-            user_discipline = user_role.get('discipline')
-            if user_discipline:
-                # Кнопка сразу вызывает генератор графика
-                keyboard_buttons.append([InlineKeyboardButton("📊 Показать мой график", callback_data=f"gen_overview_chart_{user_discipline}_{date_str_for_callback}")])
+           user_discipline_name = user_role.get('discipline')
+           if user_discipline_name:
+            # Получаем ID дисциплины пользователя
+             discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (user_discipline_name,))
+             if discipline_id_raw:
+                user_discipline_id = discipline_id_raw[0][0]
+                keyboard_buttons.append([InlineKeyboardButton("📊 Показать мой график", callback_data=f"gen_overview_chart_{user_discipline_id}_{date_str_for_callback}")])
 
         keyboard_buttons.append([InlineKeyboardButton("◀️ Назад в меню отчетов", callback_data="report_menu_all")])
 
@@ -1367,7 +1381,13 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     lang = get_user_language(user_id)
 
     parts = query.data.split('_')
-    discipline_name = parts[3]
+    discipline_id = int(parts[3])
+    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
+    if not discipline_name_raw:
+        await query.edit_message_text("❌ Ошибка: Дисциплина с таким ID не найдена.")
+        return
+    discipline_name = discipline_name_raw[0][0]
+    
     # Получаем дату из контекста, сохраненную на предыдущем шаге
     date_str = context.user_data.get('overview_date')
     selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
