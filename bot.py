@@ -2446,28 +2446,30 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
     # (На случай, если понадобятся связанные данные)
     final_data_dict = report_data 
     
-    admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
-    
+
     def safe_escape(text):
         if text is None:
             return ""
         return escape_markdown(str(text), version=2)
 
+    admin_name_raw = db_query("SELECT first_name, last_name FROM admins WHERE user_id = %s", (admin_id,))
     admin_name = safe_escape(f"{admin_name_raw[0][0]} {admin_name_raw[0][1]}" if admin_name_raw else "Администратор")
     foreman_name_safe = safe_escape(final_data_dict['foreman_name'])
     corpus_name_safe = safe_escape(final_data_dict['corpus_name'])
     discipline_name_safe = safe_escape(final_data_dict['discipline_name'])
     work_type_safe = safe_escape(final_data_dict['work_type_name'])
-    notes_safe = safe_escape(final_data_dict['notes'] or "")
+    notes_safe = safe_escape(final_data_dict['notes'])
     
     unit_of_measure_raw = db_query("SELECT unit_of_measure FROM work_types WHERE name = %s", (final_data_dict['work_type_name'],))
     unit = safe_escape(unit_of_measure_raw[0][0] if unit_of_measure_raw and unit_of_measure_raw[0][0] else "")
     
     date_str_safe = safe_escape(final_data_dict['report_date'].strftime('%d.%m.%Y'))
-    
-    # Конвертируем число в строку перед экранированием
     volume_str_safe = safe_escape(str(final_data_dict['volume']))
-    people_count_safe = final_data_dict['people_count'] # Это число, его не нужно экранировать
+    people_count_safe = final_data_dict['people_count']
+    if people_count_safe is None:
+        people_count_safe = "не указано"
+    else:
+        people_count_safe = safe_escape(str(people_count_safe))
 
     report_lines = [
         f"📄 *Отчет от бригадира: {foreman_name_safe}* \\(ID: {report_id}\\)\n",
@@ -2475,22 +2477,37 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"▪️ *Дисциплина:* {discipline_name_safe}",
         f"▪️ *Вид работ:* {work_type_safe}",
         f"▪️ *Дата:* {date_str_safe}",
+        # === ИСПРАВЛЕНИЕ: Экранируем дефис в слове "Кол-во" ===
         f"▪️ *Кол\\-во человек:* {people_count_safe}",
         f"▪️ *Выполненный объем:* {volume_str_safe} {unit}",
     ]
-
     if notes_safe.strip():
         report_lines.append(f"▪️ *Примечание:* {notes_safe}")
 
     status_map = {1: '✅ Согласовано', 0: '⏳ Ожидает', -1: '❌ Отклонено'}
-    status_text = status_map.get(final_data_dict['kiok_approved'], 'Неизвестно')
-    status_text_safe = safe_escape(status_text)
+    status_text_safe = safe_escape(status_map.get(final_data_dict['kiok_approved'], 'Неизвестно'))
     
-    edit_time = datetime.now(pytz.timezone('Asia/Tashkent')).strftime('%d\\.%m\\.%Y в %H:%M')
+    edit_time = safe_escape(datetime.now(pytz.timezone('Asia/Tashkent')).strftime('%d.%m.%Y в %H:%M'))
     footer = f"Отредактировал: {admin_name} \\({edit_time}\\)"
     
-    report_lines.extend(["", f"*Статус:* {status_text_safe}", "---", f"_{footer}_"])
+    report_lines.extend(["\n", f"*Статус:* {status_text_safe}", f"_{footer}_"])
     final_text = "\n".join(report_lines)
+    final_text = final_text.replace('_', '\\_')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('*', '\\*')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('`', '\\`')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('[', '\\[')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace(']', '\\]')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('(', '\\(')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace(')', '\\)')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('~', '\\~')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('>', '\\>')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('#', '\\#')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('+', '\\+')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('=', '\\=')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('|', '\\|')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('.', '\\.')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('!', '\\!')  # Экранируем символы MarkdownV2
+    final_text = final_text.replace('^', '\\^')  # Экранируем символы MarkdownV2
     
     # Шаг 3: Обновляем сообщение в группе
     topic_info_raw = db_query("SELECT chat_id, topic_id FROM topic_mappings WHERE discipline_name = %s", (final_data_dict['discipline_name'],))
@@ -2511,16 +2528,14 @@ async def save_edited_report(update: Update, context: ContextTypes.DEFAULT_TYPE)
             logger.info(f"Сообщение для отчета {report_id} в группе {chat_id} успешно обновлено.")
         except Exception as e:
             logger.error(f"Не удалось обновить сообщение в группе для отчета {report_id}: {e}")
-            await query.message.reply_text("⚠️ Не удалось обновить сообщение в группе КИОК. Проверьте права бота или текст на ошибки форматирования.")
-
+            await query.message.reply_text(f"⚠️ Не удалось обновить сообщение в группе КИОК. Ошибка: {e}")
 
     await query.answer("✅ Сохранено!", show_alert=True)
-    
-    # Шаг 4: Очистка и возврат
+     
+     # Шаг 4: Очистка и возврат
     context.user_data.pop('edit_report_data', None)
     context.user_data.pop('changed_fields', None)
     
-    # Возвращаемся к списку отчетов на ту дату, которую редактировали
     report_date_obj = final_data_dict['report_date']
     return await admin_show_reports_for_brigade(update, context, report_date=report_date_obj)
 
@@ -5118,16 +5133,17 @@ def main() -> None:
             # Шаг 2: Выбор бригады (с пагинацией)
             SELECT_BRIGADE_FOR_EDIT: [
                 CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_"),
-                CallbackQueryHandler(admin_prompt_for_date, pattern="^admin_pick_date$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_date_input),
-                CallbackQueryHandler(admin_report_menu, pattern="^admin_report_menu_start$"),
                 # Пагинация списка бригад
                 CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
             ],
             # Шаг 3: Просмотр отчетов бригады и выбор действия
             SELECT_REPORT_FOR_EDIT: [
                 CallbackQueryHandler(admin_confirm_delete, pattern="^admin_delete_"),
-                CallbackQueryHandler(start_report_edit, pattern="^admin_edit_"), # <--- Вход в редактирование
+                CallbackQueryHandler(start_report_edit, pattern="^admin_edit_"),
+                # === ИСПРАВЛЕНИЕ: ПЕРЕМЕЩЕННЫЕ ОБРАБОТЧИКИ ===
+                CallbackQueryHandler(admin_prompt_for_date, pattern="^admin_pick_date$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_date_input),
+                # === КОНЕЦ ИСПРАВЛЕНИЯ ===
                 # Возврат к выбору бригады
                 CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
             ],
