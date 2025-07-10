@@ -2163,13 +2163,24 @@ async def admin_select_brigade(update: Update, context: ContextTypes.DEFAULT_TYP
     return await admin_show_reports_for_brigade(update, context, date.today())
 
 async def admin_prompt_for_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Запрашивает у админа дату для просмотра отчетов и сохраняет ID сообщения."""
+    """Запрашивает у админа дату для просмотра отчетов и добавляет кнопку 'Назад'."""
     query = update.callback_query
     await query.answer()
-    message = await query.edit_message_text("Введите дату для просмотра отчетов в формате *ДД.ММ.ГГГГ*:", parse_mode="Markdown")
-    # Сохраняем ID сообщения с приглашением, чтобы удалить его позже
+
+    # Кнопка "Назад" вернет нас к списку отчетов бригады за сегодня
+    brigade_user_id = context.user_data.get('admin_edit_brigade_id')
+    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data=f"admin_brig_{brigade_user_id}")]]
+    
+    message = await query.edit_message_text(
+        "Введите дату для просмотра отчетов в формате *ДД.ММ.ГГГГ*:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    
     context.user_data['last_prompt_message_id'] = message.message_id
-    return SELECT_BRIGADE_FOR_EDIT
+    
+    # Возвращаемся в то же состояние, чтобы ждать текстовый ввод
+    return SELECT_REPORT_FOR_EDIT
 
 async def admin_process_date_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает введенную админом дату, удаляет лишние сообщения и показывает отчеты."""
@@ -2196,8 +2207,8 @@ async def admin_process_date_input(update: Update, context: ContextTypes.DEFAULT
         return SELECT_BRIGADE_FOR_EDIT # Остаемся в том же состоянии
 
 async def admin_show_reports_for_brigade(update: Update, context: ContextTypes.DEFAULT_TYPE, report_date: date) -> int:
-    """Отображает список отчетов для выбранной бригады и даты."""
-    # Эту функцию можно вызывать с разными датами
+    """Отображает список отчетов для выбранной бригады и даты (с новыми кнопками)."""
+    # Эта функцию можно вызывать с разными датами
     brigade_name = context.user_data['admin_edit_brigade_name']
     report_date_str = report_date.strftime('%Y-%m-%d')
     
@@ -2219,16 +2230,22 @@ async def admin_show_reports_for_brigade(update: Update, context: ContextTypes.D
             emoji = status_emoji.get(status, '❓')
             report_line = f"{emoji} ID: {r_id} - {work_type[:30]}"
             keyboard.append([
-                InlineKeyboardButton(report_line, callback_data=f"admin_noop_{r_id}") # noop = нет операции
+                InlineKeyboardButton(report_line, callback_data=f"admin_noop_{r_id}")
             ])
             keyboard.append([
                 InlineKeyboardButton("✏️ Редакт.", callback_data=f"admin_edit_{r_id}"),
                 InlineKeyboardButton("🗑️ Удалить", callback_data=f"admin_delete_{r_id}")
             ])
 
-    # Кнопки навигации и управления
-    keyboard.append([InlineKeyboardButton("🗓️ Выбрать другую дату", callback_data="admin_pick_date")])
-    keyboard.append([InlineKeyboardButton("◀️ Назад к выбору бригады", callback_data=f"admin_disc_{context.user_data['admin_edit_discipline']}")])
+    # === ИСПРАВЛЕНИЕ: Новые кнопки навигации по датам ===
+    keyboard.append([
+        InlineKeyboardButton("Сегодня", callback_data="admin_show_date_today"),
+        InlineKeyboardButton("Вчера", callback_data="admin_show_date_yesterday"),
+        InlineKeyboardButton("🗓️ Выбрать дату", callback_data="admin_pick_date")
+    ])
+    # === КОНЕЦ ИСПРАВЛЕНИЯ ===
+
+    keyboard.append([InlineKeyboardButton("◀️ Назад к выбору бригады", callback_data=f"admin_disc_{context.user_data['admin_edit_discipline']}_1")])
 
     # Определяем, редактировать сообщение или отправлять новое
     if update.callback_query:
@@ -2241,6 +2258,25 @@ async def admin_show_reports_for_brigade(update: Update, context: ContextTypes.D
         )
         
     return SELECT_REPORT_FOR_EDIT
+
+async def admin_show_reports_by_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Обрабатывает нажатие кнопок 'Сегодня'/'Вчера' и показывает отчеты за нужную дату."""
+    query = update.callback_query
+    await query.answer()
+    
+    # Определяем период из callback_data (например, 'admin_show_date_today')
+    period = query.data.split('_')[-1]
+    
+    if period == 'today':
+        selected_date = date.today()
+    elif period == 'yesterday':
+        selected_date = date.today() - timedelta(days=1)
+    else:
+        # На случай непредвиденной ошибки, возвращаем на сегодня
+        selected_date = date.today()
+
+    # Просто вызываем основную функцию отображения с нужной датой
+    return await admin_show_reports_for_brigade(update, context, selected_date)
 
 async def admin_confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Запрашивает подтверждение на удаление отчета."""
@@ -5108,42 +5144,38 @@ def main() -> None:
             CallbackQueryHandler(admin_report_menu, pattern="^admin_report_menu_start$")
         ],
         states={
-            # Шаг 1: Выбор дисциплины
             SELECT_DISC_FOR_EDIT: [
                 CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
             ],
-            # Шаг 2: Выбор бригады (с пагинацией)
             SELECT_BRIGADE_FOR_EDIT: [
                 CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_"),
-                # Пагинация списка бригад
                 CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
             ],
-            # Шаг 3: Просмотр отчетов бригады и выбор действия
             SELECT_REPORT_FOR_EDIT: [
                 CallbackQueryHandler(admin_confirm_delete, pattern="^admin_delete_"),
                 CallbackQueryHandler(start_report_edit, pattern="^admin_edit_"),
-                # === ИСПРАВЛЕНИЕ: ПЕРЕМЕЩЕННЫЕ ОБРАБОТЧИКИ ===
+                
+                # === ИСПРАВЛЕННЫЕ И НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ДАТ ===
+                CallbackQueryHandler(admin_show_reports_by_button, pattern="^admin_show_date_"),
                 CallbackQueryHandler(admin_prompt_for_date, pattern="^admin_pick_date$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, admin_process_date_input),
-                # === КОНЕЦ ИСПРАВЛЕНИЯ ===
-                # Возврат к выбору бригады
-                CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_")
+                
+                # Возврат к выбору бригады по-прежнему работает отсюда
+                CallbackQueryHandler(admin_select_discipline, pattern="^admin_disc_"),
+                # Этот обработчик нужен, чтобы кнопка "Назад" из ввода даты работала
+                CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_"),
             ],
-            # Шаг 3.1: Подтверждение удаления
             CONFIRM_DELETE: [
                 CallbackQueryHandler(admin_execute_delete, pattern="^admin_delete_confirm_yes$"),
-                CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_") # Отмена удаления
+                CallbackQueryHandler(admin_select_brigade, pattern="^admin_brig_")
             ],
-            # Шаг 4 (Редактирование): Выбор поля для редактирования
             SELECT_FIELD_TO_EDIT: [
                 CallbackQueryHandler(prompt_for_new_value, pattern="^edit_field_"),
                 CallbackQueryHandler(save_edited_report, pattern="^edit_save$"),
-                CallbackQueryHandler(cancel_edit, pattern="^edit_cancel$") # Отмена редактирования
+                CallbackQueryHandler(cancel_edit, pattern="^edit_cancel$")
             ],
-            # Шаг 5 (Редактирование): Ожидание нового значения
             AWAITING_NEW_VALUE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_new_value),
-                # Обработка выбора дисциплины из кнопок
                 CallbackQueryHandler(process_new_value, pattern="^set_new_value_")
             ]
         },
