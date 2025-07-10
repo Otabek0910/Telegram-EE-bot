@@ -1105,12 +1105,24 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-            total_brigades_raw = db_query("SELECT COUNT(*) FROM brigades")
-            total_brigades = total_brigades_raw[0][0] if total_brigades_raw else 0
+            brigade_counts_raw = db_query("""
+                SELECT d.name, COUNT(b.user_id) 
+                FROM brigades b 
+                JOIN disciplines d ON b.discipline = d.id 
+                GROUP BY d.name ORDER BY d.name
+            """)
             
+            total_brigades = sum(count for _, count in brigade_counts_raw) if brigade_counts_raw else 0
+            
+            brigade_details_lines = []
+            if brigade_counts_raw:
+                for disc_name, count in brigade_counts_raw:
+                    brigade_details_lines.append(f"    - {get_data_translation(disc_name, lang)}: *{count}*")
+
             message_text_intro = (
                 f"📊 *{get_text('report_menu_summary_title', lang).format(period=period_text)}*\n\n"
                 f"▪️ {get_text('total_brigades_in_system', lang)} *{total_brigades}*\n"
+                + "\n".join(brigade_details_lines) # Добавляем детализацию
             )
             final_params = tuple(date_params)
             role_filter_sql = ""
@@ -1222,6 +1234,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
     # Сохраняем выбранную дату в контекст для следующих шагов (выбора дисциплин и построения графика)
     context.user_data['overview_date'] = selected_date.strftime('%Y-%m-%d')
+    date_str_for_callback = context.user_data['overview_date']
     
     user_id = str(update.effective_user.id)
     lang = get_user_language(user_id)
@@ -1313,11 +1326,25 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
             InlineKeyboardButton("Выбрать дату", callback_data="report_overview_pick_date")
         ]
         
-        keyboard_buttons = [
-            date_buttons,
-            [InlineKeyboardButton("📊 Перейти к графикам", callback_data="report_overview_chart_prompt")],
-            [InlineKeyboardButton("◀️ Назад в меню отчетов", callback_data="report_menu_all")]
-        ]
+        keyboard_buttons = [date_buttons]
+
+            # Для Админов/Рук. 1 ур. - сразу список дисциплин для графика
+        if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
+            disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
+            if disciplines:
+                 keyboard_buttons.append([InlineKeyboardButton("--- Графики по дисциплинам ---", callback_data="noop")])
+                 for name, in disciplines:
+                 # Кнопка сразу вызывает генератор графика
+                     keyboard_buttons.append([InlineKeyboardButton(f"📈 {get_data_translation(name, lang)}", callback_data=f"gen_overview_chart_{name}_{date_str_for_callback}")])
+
+           # Для ПТО/Рук. 2 ур. - одна кнопка для их дисциплины
+        elif user_role.get('isPto') or user_role.get('managerLevel') == 2:
+            user_discipline = user_role.get('discipline')
+            if user_discipline:
+                # Кнопка сразу вызывает генератор графика
+                keyboard_buttons.append([InlineKeyboardButton("📊 Показать мой график", callback_data=f"gen_overview_chart_{user_discipline}_{date_str_for_callback}")])
+
+        keyboard_buttons.append([InlineKeyboardButton("◀️ Назад в меню отчетов", callback_data="report_menu_all")])
 
         await wait_msg.edit_text(text=message_text, reply_markup=InlineKeyboardMarkup(keyboard_buttons), parse_mode="Markdown")
         return SELECTING_OVERVIEW_ACTION
@@ -5332,9 +5359,11 @@ def main() -> None:
         entry_points=[CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview$")],
         states={
             SELECTING_OVERVIEW_ACTION: [
+                # Обработка кнопок с датами
                 CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview_date_"),
+                # Вызов окна для ввода даты вручную
                 CallbackQueryHandler(prompt_for_overview_date, pattern="^report_overview_pick_date$"),
-                CallbackQueryHandler(report_overview_chart_prompt, pattern="^report_overview_chart_prompt$"),
+                # Прямой вызов генератора графика
                 CallbackQueryHandler(generate_overview_chart, pattern="^gen_overview_chart_"),
             ],
             AWAITING_OVERVIEW_DATE: [
@@ -5343,7 +5372,7 @@ def main() -> None:
             ],
         },
         fallbacks=[
-            CallbackQueryHandler(report_menu, pattern="^report_menu_all"),
+            CallbackQueryHandler(report_menu, pattern="^report_menu_all$"),
             CommandHandler('start', start_over)
         ],
         per_user=True, allow_reentry=True
