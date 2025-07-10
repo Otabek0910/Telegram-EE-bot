@@ -1359,10 +1359,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ v2:
-    Генерирует и отправляет улучшенную диаграмму 'План/Факт'.
-    Корректно разбирает callback_data, использует дату из него, а не из контекста,
-    и возвращает состояние для продолжения диалога.
+    ИСПРАВЛЕННАЯ ВЕРСИЯ v3:
+    Исправлена ошибка с аргументом в функции annotate и убрано предупреждение pandas.
     """
     query = update.callback_query
     await query.answer()
@@ -1370,14 +1368,9 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     user_id = str(query.from_user.id)
     lang = get_user_language(user_id)
 
-    # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
-    # Разбираем callback вида "gen_overview_chart_ID_YYYY-MM-DD"
     try:
-        # Используем rsplit, чтобы отделить дату, которая может содержать дефисы
         base_callback, date_str = query.data.rsplit('_', 1)
         discipline_id = int(base_callback.split('_')[-1])
-        
-        # Проверяем формат даты
         selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
     except (ValueError, IndexError):
         logger.error(f"Критическая ошибка разбора callback_data в generate_overview_chart: {query.data}")
@@ -1390,11 +1383,8 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         return SELECTING_OVERVIEW_ACTION
     discipline_name = discipline_name_raw[0][0]
     
-    # Сохраняем дату в контекст на случай, если она понадобится для кнопки "Назад"
     context.user_data['overview_date'] = date_str
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-
-    # Редактируем существующее сообщение, чтобы показать статус загрузки
+    
     if query.message:
         await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
     
@@ -1424,7 +1414,10 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
 
         df['is_prochie'] = df['work_type_name'].str.contains('Прочие', case=False, na=False) | df['norm_per_unit'].isnull()
         prochie_df = df[df['is_prochie'] == True]
-        main_df = df[df['is_prochie'] == False]
+        
+        # --- НАЧАЛО ИСПРАВЛЕНИЯ: Добавляем .copy() чтобы избежать SettingWithCopyWarning ---
+        main_df = df[df['is_prochie'] == False].copy()
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
         
         prochie_people_count = int(prochie_df['people_count'].sum())
 
@@ -1451,6 +1444,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         fig, ax = plt.subplots(figsize=(12, 8))
         df_chart.plot(x='x_label', y=['План', 'Факт'], kind='bar', ax=ax, width=0.7, legend=True)
         
+        # --- КЛЮЧЕВОЙ МОМЕНТ: Эта версия ax.annotate не содержит ошибочного аргумента 'labeltext' ---
         for bar in ax.patches:
             ax.annotate(f'{bar.get_height():.1f}',
                         (bar.get_x() + bar.get_width() / 2, bar.get_height()),
@@ -1474,7 +1468,6 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         if prochie_people_count > 0:
             caption_text += f"\n\n*Примечание:* на прочих работах было задействовано *{prochie_people_count}* чел."
         
-        # Удаляем сообщение "Пожалуйста, подождите"
         await query.message.delete()
         
         with open(chart_path, 'rb') as chart_file:
