@@ -70,6 +70,8 @@ REPORTS_GROUP_URL = "https://t.me/+OdHnUNt1WaZiMDY6" # <<< ДЛЯ ПУНКТА 4
 AWAITING_RESTORE_FILE = range(12, 13)
 AWAITING_DISCIPLINE_FOR_MANAGER = range(23, 24)
 SELECTING_PERSONNEL_HISTORY_DATE = range(24, 25)
+(SELECTING_OVERVIEW_ACTION, AWAITING_OVERVIEW_DATE) = range(50, 52)
+
 
 # Настройка логирования
 logging.basicConfig(
@@ -1194,111 +1196,131 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode='Markdown'
     )
 
-async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ С УЧЕТОМ ПРАВ ДОСТУПА:
-    Показывает информативную сводку по дисциплинам за сегодня.
+    ИСПРАВЛЕННАЯ ВЕРСИЯ С ВЫБОРОМ ДАТЫ:
+    Показывает информативную сводку по дисциплинам за ВЫБРАННЫЙ день.
+    Является точкой входа в новый диалог.
     """
     query = update.callback_query
-    await query.answer()
-    user_id = str(query.from_user.id)
-    lang = get_user_language(user_id)
-    user_role = check_user_role(user_id) # <--- Получаем роль пользователя
+    
+    # Определяем дату
+    selected_date = date.today()
+    if query:
+        await query.answer()
+        if query.data.startswith("report_overview_date_"):
+            date_str = query.data.split('_')[-1]
+            if date_str == 'today':
+                selected_date = date.today()
+            elif date_str == 'yesterday':
+                selected_date = date.today() - timedelta(days=1)
+            else:
+                try:
+                    selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+                except ValueError:
+                    selected_date = date.today()
 
-    await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
+    context.user_data['overview_date'] = selected_date.strftime('%Y-%m-%d')
+    
+    user_id = str(update.effective_user.id)
+    lang = get_user_language(user_id)
+    user_role = check_user_role(user_id)
+    
+    wait_msg = await context.bot.send_message(query.message.chat_id, f"⏳ {get_text('loading_please_wait', lang)}")
+    await query.message.delete()
 
     try:
         engine = create_engine(DATABASE_URL)
-        today_str = date.today().strftime('%Y-%m-%d')
-
-        # Базовый запрос
+        
         pd_query = """
             SELECT r.discipline_name, r.work_type_name, r.people_count, r.volume, wt.norm_per_unit
             FROM reports r
             LEFT JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
-            WHERE r.report_date = :today
+            WHERE r.report_date = :selected_date
         """
-        params = {'today': today_str}
+        params = {'selected_date': selected_date.strftime('%Y-%m-%d')}
 
-        # --- ВОТ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ---
-        # Если роль не имеет полного доступа, добавляем фильтр по дисциплине
         if not (user_role.get('isAdmin') or user_role.get('managerLevel') == 1):
             user_discipline = user_role.get('discipline')
             if not user_discipline:
-                 await query.edit_message_text("Ошибка: для вашей роли не задана дисциплина.")
-                 return
+                 await wait_msg.edit_text("Ошибка: для вашей роли не задана дисциплина.")
+                 return ConversationHandler.END
             pd_query += " AND r.discipline_name = :discipline"
             params['discipline'] = user_discipline
-        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-
 
         with engine.connect() as connection:
             df = pd.read_sql_query(text(pd_query), connection, params=params)
 
+        date_text = selected_date.strftime('%d.%m.%Y')
+        title = get_text('overview_summary_title', lang) + f" на {date_text}"
+
         if df.empty:
-            await query.edit_message_text(
-                f"*{get_text('overview_summary_title', lang)}*\n\n_{get_text('no_reports_today', lang)}_",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")]]),
-                parse_mode="Markdown"
-            )
-            return
+            message_text = f"*{title}*\n\n_{get_text('no_reports_today', lang)}_"
+        else:
+            df['planned_volume'] = df['people_count'] * df['norm_per_unit'].fillna(0)
+            other_works_df = df[df['norm_per_unit'].isnull()]
+            main_df = df[df['norm_per_unit'].notnull()]
 
-        # Остальная часть функции остается без изменений, т.к. она будет работать
-        # либо со всеми данными, либо с уже отфильтрованными.
-        df['planned_volume'] = df['people_count'] * df['norm_per_unit'].fillna(0)
-        other_works_df = df[df['norm_per_unit'].isnull()]
-        main_df = df[df['norm_per_unit'].notnull()]
+            message_lines = [f"📊 *{title}*"]
+            all_disciplines = df['discipline_name'].unique()
 
-        message_lines = [f"📊 *{get_text('overview_summary_title', lang)}*"]
-        all_disciplines = df['discipline_name'].unique()
+            for discipline in all_disciplines:
+                disc_main_df = main_df[main_df['discipline_name'] == discipline]
+                disc_other_df = other_works_df[other_works_df['discipline_name'] == discipline]
+                if disc_main_df.empty and disc_other_df.empty:
+                    continue
 
-        for discipline in all_disciplines:
-            disc_main_df = main_df[main_df['discipline_name'] == discipline]
-            disc_other_df = other_works_df[other_works_df['discipline_name'] == discipline]
-            if disc_main_df.empty and disc_other_df.empty:
-                continue
+                total_people = int(disc_main_df['people_count'].sum() + disc_other_df['people_count'].sum())
+                total_plan = disc_main_df['planned_volume'].sum()
+                total_fact = disc_main_df['volume'].sum()
+                avg_performance = (total_fact / total_plan * 100) if total_plan > 0 else 0
 
-            total_people = int(disc_main_df['people_count'].sum() + disc_other_df['people_count'].sum())
-            total_plan = disc_main_df['planned_volume'].sum()
-            total_fact = disc_main_df['volume'].sum()
-            avg_performance = (total_fact / total_plan * 100) if total_plan > 0 else 0
+                message_lines.append("\n" + "─" * 15)
+                message_lines.append(f"*{get_data_translation(discipline, lang)}*")
+                message_lines.append(f"▪️ *{get_text('total_people_short', lang)}:* {total_people} чел.")
+                message_lines.append(f"▪️ *{get_text('average_output_short', lang)}:* {avg_performance:.1f}%")
 
-            message_lines.append("\n" + "─" * 15)
-            message_lines.append(f"*{get_data_translation(discipline, lang)}*")
-            message_lines.append(f"▪️ *{get_text('total_people_short', lang)}:* {total_people} чел.")
-            message_lines.append(f"▪️ *{get_text('average_output_short', lang)}:* {avg_performance:.1f}%")
+                if not disc_main_df.empty:
+                    message_lines.append(f"_{get_text('work_details_label', lang)}_")
+                    for _, row in disc_main_df.iterrows():
+                        work_perf = (row['volume'] / row['planned_volume'] * 100) if row['planned_volume'] > 0 else 0
+                        message_lines.append(f"  - {get_data_translation(row['work_type_name'], lang)}: {row['people_count']} чел. ({work_perf:.1f}%)")
 
-            if not disc_main_df.empty:
-                message_lines.append(f"_{get_text('work_details_label', lang)}_")
-                for _, row in disc_main_df.iterrows():
-                    work_perf = (row['volume'] / row['planned_volume'] * 100) if row['planned_volume'] > 0 else 0
-                    message_lines.append(
-                        f"  - {get_data_translation(row['work_type_name'], lang)}: {row['people_count']} чел. ({work_perf:.1f}%)"
-                    )
+                if not disc_other_df.empty:
+                    other_people_count = int(disc_other_df['people_count'].sum())
+                    message_lines.append(f"_{get_text('other_works_label', lang)}:_ {other_people_count} чел.")
+            message_text = "\n".join(message_lines)
 
-            if not disc_other_df.empty:
-                other_people_count = int(disc_other_df['people_count'].sum())
-                message_lines.append(f"_{get_text('other_works_label', lang)}:_ {other_people_count} чел.")
-
+        # === НОВЫЕ КНОПКИ УПРАВЛЕНИЯ ДАТОЙ ===
+        date_buttons = [
+            InlineKeyboardButton("Вчера", callback_data="report_overview_date_yesterday"),
+            InlineKeyboardButton("Сегодня", callback_data="report_overview_date_today"),
+            InlineKeyboardButton("Выбрать дату", callback_data="report_overview_pick_date")
+        ]
+        
         keyboard_buttons = [
+            date_buttons,
             [InlineKeyboardButton("📈 Показать график выработки", callback_data="report_overview_chart_prompt")],
             [InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")]
         ]
 
-        await query.edit_message_text(
-            text="\n".join(message_lines),
+        await wait_msg.edit_text(
+            text=message_text,
             reply_markup=InlineKeyboardMarkup(keyboard_buttons),
             parse_mode="Markdown"
         )
+        return 1 # Переходим в состояние ожидания выбора
 
     except Exception as e:
         logger.error(f"Ошибка в show_overview_dashboard_menu: {e}")
-        await query.edit_message_text(f"❗ *{get_text('error_generic', lang)}*")
+        await wait_msg.edit_text(f"❗ *{get_text('error_generic', lang)}*")
+        return ConversationHandler.END
 
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    НОВАЯ ФУНКЦИЯ:
-    Генерирует и отправляет столбчатую диаграмму "План/Факт" для выбранной дисциплины.
+    НОВАЯ ВЕРСИЯ:
+    Генерирует и отправляет улучшенную диаграмму 'План/Факт' с метками,
+    примечанием о прочих работах и количеством человек.
     """
     query = update.callback_query
     await query.answer()
@@ -1306,22 +1328,24 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     user_id = str(query.from_user.id)
     lang = get_user_language(user_id)
 
-    discipline_name = query.data.split('_', 3)[-1]
+    parts = query.data.split('_')
+    discipline_name = parts[3]
+    # Получаем дату из контекста, сохраненную на предыдущем шаге
+    date_str = context.user_data.get('overview_date')
+    selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
 
     await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
 
     try:
         engine = create_engine(DATABASE_URL)
-        today_str = date.today().strftime('%Y-%m-%d')
-
-        # Запрос для получения данных по конкретной дисциплине
+        
         pd_query = """
             SELECT r.work_type_name, r.people_count, r.volume, wt.norm_per_unit
             FROM reports r
-            JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
-            WHERE r.report_date = :today AND r.discipline_name = :discipline
+            LEFT JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
+            WHERE r.report_date = :report_date AND r.discipline_name = :discipline
         """
-        params = {'today': today_str, 'discipline': discipline_name}
+        params = {'report_date': date_str, 'discipline': discipline_name}
 
         with engine.connect() as connection:
             df = pd.read_sql_query(text(pd_query), connection, params=params)
@@ -1329,41 +1353,88 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         if df.empty or df['norm_per_unit'].isnull().all():
             await query.edit_message_text(
                 f"*{get_text('chart_no_data_title', lang)}*\n\n_{get_text('chart_no_data_subtitle', lang).format(discipline=get_data_translation(discipline_name, lang))}_",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="report_overview")]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]),
                 parse_mode="Markdown"
             )
             return
 
-        # Считаем план/факт
-        df['plan'] = df['people_count'] * df['norm_per_unit']
-        df_chart = df.groupby('work_type_name').agg(План=('plan', 'sum'), Факт=('volume', 'sum')).reset_index()
+        # 1. Отделяем "Прочие работы" от основных
+        df['is_prochie'] = df['work_type_name'].str.contains('Прочие', case=False, na=False) | df['norm_per_unit'].isnull()
+        prochie_df = df[df['is_prochie'] == True]
+        main_df = df[df['is_prochie'] == False]
+        
+        prochie_people_count = int(prochie_df['people_count'].sum())
 
-        # Рисуем график
+        if main_df.empty:
+            await query.edit_message_text(
+                f"*{get_text('chart_no_data_title', lang)}*\n\nНа дату {selected_date.strftime('%d.%m.%Y')} есть только 'Прочие работы', для которых график не строится.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]),
+                parse_mode="Markdown"
+            )
+            return
+
+        # 2. Считаем план/факт и агрегируем данные
+        main_df['plan'] = main_df['people_count'] * main_df['norm_per_unit']
+        df_chart = main_df.groupby('work_type_name').agg(
+            План=('plan', 'sum'), 
+            Факт=('volume', 'sum'),
+            Люди=('people_count', 'sum')
+        ).reset_index()
+
+        # Создаем красивые подписи для оси X
+        df_chart['x_label'] = df_chart.apply(
+            lambda row: f"{row['work_type_name']}\n({int(row['Люди'])} чел.)", axis=1
+        )
+
+        # 3. Рисуем график
         plt.style.use('seaborn-v0_8-darkgrid')
-        fig, ax = plt.subplots(figsize=(12, 7))
+        fig, ax = plt.subplots(figsize=(12, 8))
 
-        df_chart.plot(x='work_type_name', y=['План', 'Факт'], kind='bar', ax=ax, width=0.6)
+        df_chart.plot(x='x_label', y=['План', 'Факт'], kind='bar', ax=ax, width=0.7, legend=True)
+        
+        # 4. Добавляем значения над колонками
+        for bar in ax.patches:
+            ax.annotate(f'{bar.get_height():.1f}',
+                        (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                        ha='center', va='center',
+                        size=9, xytext=(0, 8),
+                        textcoords='offset points',
+                        fontweight='bold')
 
-        ax.set_title(f"Выработка по дисциплине «{discipline_name}» за {date.today().strftime('%d.%m.%Y')}", fontsize=16)
+        ax.set_title(f"Выработка по дисциплине «{discipline_name}» за {selected_date.strftime('%d.%m.%Y')}", fontsize=16, fontweight='bold')
         ax.set_ylabel("Объем работ", fontsize=12)
         ax.set_xlabel("")
-        plt.xticks(rotation=15, ha="right")
-        plt.tight_layout()
+        ax.tick_params(axis='x', labelsize=10, rotation=15, ha="right")
+        ax.legend(fontsize=12)
+        
+        # Увеличиваем верхний предел оси Y, чтобы метки не обрезались
+        ax.set_ylim(top=ax.get_ylim()[1] * 1.15)
 
+        plt.tight_layout(pad=2.0)
+        
         chart_path = os.path.join(DASHBOARD_DIR, f'chart_{user_id}.png')
         plt.savefig(chart_path)
         plt.close(fig)
 
-        # Отправляем картинку
+        # 5. Формируем подпись с примечанием
+        caption_text = f"📈 *Анализ выработки для дисциплины «{get_data_translation(discipline_name, lang)}»*"
+        if prochie_people_count > 0:
+            caption_text += f"\n\n*Примечание:* на прочих работах без нормы было задействовано *{prochie_people_count}* чел."
+        
+        # 6. Отправляем фото и удаляем временное сообщение
         with open(chart_path, 'rb') as chart_file:
             await context.bot.send_photo(
                 chat_id=query.message.chat_id,
                 photo=chart_file,
-                caption=f"📈 *Анализ выработки для дисциплины «{discipline_name}»*",
-                parse_mode="Markdown"
+                caption=caption_text,
+                parse_mode="Markdown",
+                # Добавляем кнопку "Назад" прямо сюда
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("◀️ Назад к сводке", callback_data=f"report_overview_date_{date_str}")
+                ]])
             )
 
-        await query.message.delete() # Удаляем сообщение "Пожалуйста, подождите..."
+        await query.message.delete()
 
     except Exception as e:
         logger.error(f"Ошибка при создании графика: {e}")
@@ -1374,8 +1445,8 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
 
 async def report_overview_chart_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ С УЧЕТОМ ПРАВ ДОСТУПА:
-    Спрашивает, для какой дисциплины строить график.
+    ИСПРАВЛЕННАЯ ВЕРСИЯ:
+    Спрашивает, для какой дисциплины строить график, и передает дальше выбранную дату.
     """
     query = update.callback_query
     await query.answer()
@@ -1383,10 +1454,14 @@ async def report_overview_chart_prompt(update: Update, context: ContextTypes.DEF
     lang = get_user_language(user_id)
     user_role = check_user_role(user_id)
 
-    keyboard_buttons = []
+    # Получаем дату из контекста диалога
+    date_str = context.user_data.get('overview_date')
+    if not date_str:
+        await query.edit_message_text("Ошибка: не удалось определить дату. Пожалуйста, начните сначала.")
+        return
 
-    # --- ВОТ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ---
-    # Если у пользователя полный доступ, показываем все дисциплины
+    keyboard_buttons = []
+    
     if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
         disciplines = db_query("SELECT name FROM disciplines ORDER BY name")
         if not disciplines:
@@ -1394,25 +1469,51 @@ async def report_overview_chart_prompt(update: Update, context: ContextTypes.DEF
             return
         
         for name, in disciplines:
-             keyboard_buttons.append([InlineKeyboardButton(get_data_translation(name, lang), callback_data=f"gen_overview_chart_{name}")])
+             # Добавляем дату в callback_data
+             keyboard_buttons.append([InlineKeyboardButton(get_data_translation(name, lang), callback_data=f"gen_overview_chart_{name}_{date_str}")])
 
-    # Иначе показываем только его дисциплину
     else:
         user_discipline = user_role.get('discipline')
         if not user_discipline:
             await query.edit_message_text("Ошибка: для вашей роли не задана дисциплина.")
             return
-        keyboard_buttons.append([InlineKeyboardButton(get_data_translation(user_discipline, lang), callback_data=f"gen_overview_chart_{user_discipline}")])
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-
-
-    keyboard_buttons.append([InlineKeyboardButton("◀️ Назад", callback_data="report_overview")])
+        # Добавляем дату в callback_data
+        keyboard_buttons.append([InlineKeyboardButton(get_data_translation(user_discipline, lang), callback_data=f"gen_overview_chart_{user_discipline}_{date_str}")])
+    
+    # Кнопка "Назад" теперь тоже содержит дату, чтобы вернуться в правильное состояние
+    keyboard_buttons.append([InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")])
 
     await query.edit_message_text(
         "*Выберите дисциплину для просмотра графика:*",
         reply_markup=InlineKeyboardMarkup(keyboard_buttons),
         parse_mode="Markdown"
     )
+
+async def prompt_for_overview_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        query = update.callback_query
+        await query.answer()
+        date_str = context.user_data.get('overview_date')
+        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]
+        await query.edit_message_text(
+            "Введите дату в формате *ДД.ММ.ГГГГ*:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+        return AWAITING_OVERVIEW_DATE
+
+    # Новая функция для обработки текстового ввода даты
+
+async def process_overview_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        try:
+            selected_date = datetime.strptime(update.message.text, "%d.%m.%Y").date()
+            # Передаем управление основной функции, которая перерисует меню
+            # Для этого подменяем данные в update.callback_query
+            query_data = f"report_overview_date_{selected_date.strftime('%Y-%m-%d')}"
+            update.callback_query = type('obj', (object,), {'data': query_data, 'message': update.message, 'answer': lambda: None})
+            return await show_overview_dashboard_menu(update, context)
+        except (ValueError, AttributeError):
+            await update.message.reply_text("Неверный формат даты. Попробуйте еще раз.")
+            return AWAITING_OVERVIEW_DATE
 
 async def show_historical_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -4575,6 +4676,7 @@ async def show_paginated_brigade_report(update: Update, context: ContextTypes.DE
         reply_markup=InlineKeyboardMarkup(keyboard), 
         parse_mode="Markdown"
     )
+
 async def get_hr_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Запрашивает дату для отчета по персоналу."""
     query = update.callback_query
@@ -4976,6 +5078,7 @@ def get_user_language(user_id: str) -> str:
     
     logger.info(f"[DEBUG] Язык не найден ни в одной таблице. Возвращаю 'ru' по умолчанию для {user_id_str}.")
     return 'ru'
+
 def update_user_language(user_id: str, lang_code: str):
     """Обновляет язык пользователя с ОТЛАДКОЙ."""
     user_id_str = str(user_id)
@@ -5186,8 +5289,34 @@ def main() -> None:
         per_user=True,
         allow_reentry=True
     )
+    
     # Добавляем новый единый обработчик в приложение
     application.add_handler(admin_management_conv)
+
+    overview_conv_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview")],
+        states={
+            SELECTING_OVERVIEW_ACTION: [
+                CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview_date_"),
+                CallbackQueryHandler(prompt_for_overview_date, pattern="^report_overview_pick_date$"),
+                CallbackQueryHandler(report_overview_chart_prompt, pattern="^report_overview_chart_prompt$"),
+                CallbackQueryHandler(generate_overview_chart, pattern="^gen_overview_chart_"),
+            ],
+            AWAITING_OVERVIEW_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_overview_date),
+                # Этот обработчик нужен для кнопки "Назад" из этого состояния
+                CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview_date_"),
+            ],
+        },
+        fallbacks=[
+            CallbackQueryHandler(report_menu, pattern="^report_menu_all$"),
+            CommandHandler('start', start_over)
+        ],
+        per_user=True, allow_reentry=True
+    )
+    
+    # Добавляем новый обработчик в приложение
+    application.add_handler(overview_conv_handler)
 
     # === КОНЕЦ ИЗМЕНЕНИЙ ===
 
@@ -5208,7 +5337,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(report_menu, pattern="^report_menu_all$"))
     application.add_handler(CallbackQueryHandler(manage_menu, pattern="^manage_menu$"))
     application.add_handler(CallbackQueryHandler(generate_overview_chart, pattern="^gen_overview_chart_"))
-    application.add_handler(CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview$"))
+    #application.add_handler(CallbackQueryHandler(show_overview_dashboard_menu, pattern="^report_overview$"))
     
     
     #application.add_handler(CallbackQueryHandler(show_problem_brigades_menu, pattern="^report_underperforming$"))
