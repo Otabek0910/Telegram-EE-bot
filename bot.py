@@ -1359,8 +1359,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ v3:
-    Исправлена ошибка с аргументом в функции annotate и убрано предупреждение pandas.
+    ИСПРАВЛЕННАЯ ВЕРСИЯ v5 (ФИНАЛ):
+    Исправлена ошибка парсинга MarkdownV2 (экранирование точки) и логика обработки ошибок.
     """
     query = update.callback_query
     await query.answer()
@@ -1414,11 +1414,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
 
         df['is_prochie'] = df['work_type_name'].str.contains('Прочие', case=False, na=False) | df['norm_per_unit'].isnull()
         prochie_df = df[df['is_prochie'] == True]
-        
-        # --- НАЧАЛО ИСПРАВЛЕНИЯ: Добавляем .copy() чтобы избежать SettingWithCopyWarning ---
         main_df = df[df['is_prochie'] == False].copy()
-        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-        
         prochie_people_count = int(prochie_df['people_count'].sum())
 
         if main_df.empty:
@@ -1444,7 +1440,6 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         fig, ax = plt.subplots(figsize=(12, 8))
         df_chart.plot(x='x_label', y=['План', 'Факт'], kind='bar', ax=ax, width=0.7, legend=True)
         
-        # --- КЛЮЧЕВОЙ МОМЕНТ: Эта версия ax.annotate не содержит ошибочного аргумента 'labeltext' ---
         for bar in ax.patches:
             ax.annotate(f'{bar.get_height():.1f}',
                         (bar.get_x() + bar.get_width() / 2, bar.get_height()),
@@ -1466,10 +1461,10 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         safe_discipline_name = escape_markdown(get_data_translation(discipline_name, lang), version=2)
         caption_text = f"*Анализ выработки для дисциплины «{safe_discipline_name}»*"
         if prochie_people_count > 0:
-            caption_text += f"\n\n*Примечание:* на прочих работах было задействовано *{prochie_people_count}* чел."
+            # ИСПРАВЛЕНИЕ №1: Экранируем точку
+            caption_text += f"\n\n*Примечание:* на прочих работах было задействовано *{prochie_people_count}* чел\."
         
-        await query.message.delete()
-        
+        # ИСПРАВЛЕНИЕ №2: Изменена логика отправки и обработки ошибок
         with open(chart_path, 'rb') as chart_file:
             await context.bot.send_photo(
                 chat_id=query.message.chat_id,
@@ -1480,10 +1475,15 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
                     InlineKeyboardButton("◀️ Назад к сводке", callback_data=f"report_overview_date_{date_str}")
                 ]])
             )
+        
+        # Удаляем сообщение "Пожалуйста, подождите" только после успешной отправки
+        await query.message.delete()
 
     except Exception as e:
-        logger.error(f"Ошибка при создании графика: {e}")
-        await query.message.edit_text(f"❌ {get_text('error_generic', lang)}")
+        logger.error(f"Ошибка при создании или отправке графика: {e}")
+        # Теперь можно безопасно редактировать сообщение, т.к. оно не было удалено
+        if query and query.message:
+            await query.message.edit_text(f"❌ {get_text('error_generic', lang)}")
     finally:
         if chart_path and os.path.exists(chart_path):
             os.remove(chart_path)
