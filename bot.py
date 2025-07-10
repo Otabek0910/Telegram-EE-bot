@@ -1106,17 +1106,11 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
             brigade_details_query = """
-                 WITH reported_today AS (
-                    SELECT DISTINCT foreman_name FROM reports WHERE report_date = CURRENT_DATE
-                )
                 SELECT 
                     d.name,
-                    COUNT(b.user_id) as total_brigades,
-                    COUNT(rt.foreman_name) AS reported_count
+                    (SELECT COUNT(*) FROM brigades WHERE discipline = d.id) as total_brigades,
+                    (SELECT COUNT(DISTINCT b.user_id) FROM brigades b JOIN reports r ON b.brigade_name = r.foreman_name WHERE b.discipline = d.id AND r.report_date = CURRENT_DATE) as reported_count
                 FROM disciplines d
-                LEFT JOIN brigades b ON b.discipline = d.id
-                LEFT JOIN reported_today rt ON b.brigade_name = rt.foreman_name
-                GROUP BY d.name
                 ORDER BY d.name;
             """
             brigade_counts_raw = db_query(brigade_details_query)
@@ -1387,7 +1381,10 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     date_str = context.user_data.get('overview_date')
     selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
 
-    await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
+    if query.message:
+        await query.message.delete()
+    wait_msg = await context.bot.send_message(query.message.chat_id, f"⏳ {get_text('loading_please_wait', lang)}")
+    chart_path = None # Инициализируем переменную
 
     try:
         engine = create_engine(DATABASE_URL)
@@ -1470,9 +1467,10 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         plt.close(fig)
 
         # 5. Формируем подпись с примечанием
-        caption_text = f"*Анализ выработки для дисциплины «{get_data_translation(discipline_name, lang)}»*"
+        safe_discipline_name = escape_markdown(get_data_translation(discipline_name, lang), version=2)
+        caption_text = f"*Анализ выработки для дисциплины «{safe_discipline_name}»*"
         if prochie_people_count > 0:
-            caption_text += f"\n\n*Примечание:* на прочих работах без нормы было задействовано *{prochie_people_count}* чел."
+            caption_text += f"\n\n*Примечание:* на прочих работах было задействовано *{prochie_people_count}* чел."
         
         # 6. Отправляем фото и удаляем временное сообщение
         with open(chart_path, 'rb') as chart_file:
@@ -1480,20 +1478,19 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
                 chat_id=query.message.chat_id,
                 photo=chart_file,
                 caption=caption_text,
-                parse_mode="Markdown",
-                # Добавляем кнопку "Назад" прямо сюда
+                parse_mode='MarkdownV2', # Используем MarkdownV2
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("◀️ Назад к сводке", callback_data=f"report_overview_date_{date_str}")
                 ]])
             )
-
-        await query.message.delete()
+        # Удаляем сообщение "Пожалуйста, подождите"
+        await wait_msg.delete()
 
     except Exception as e:
         logger.error(f"Ошибка при создании графика: {e}")
-        await query.edit_message_text(f"❌ {get_text('error_generic', lang)}")
+        await wait_msg.edit_text(f"❌ {get_text('error_generic', lang)}")
     finally:
-        if 'chart_path' in locals() and os.path.exists(chart_path):
+        if chart_path and os.path.exists(chart_path):
             os.remove(chart_path)
             
     return SELECTING_OVERVIEW_ACTION
