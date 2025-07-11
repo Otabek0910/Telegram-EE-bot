@@ -5503,8 +5503,7 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(show_paginated_brigade_report, pattern="^hr_report_"))
     application.add_handler(CallbackQueryHandler(select_language_menu, pattern="^select_language$"))
     application.add_handler(CallbackQueryHandler(show_problem_brigades_by_date, pattern="^problem_brigades_by_date_"))
-    application.add_handler(CallbackQueryHandler(process_problem_brigades_date_selection, pattern="^problem_brigades_date_"))
-    
+      
     
     
           
