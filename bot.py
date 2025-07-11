@@ -1772,90 +1772,75 @@ async def generate_discipline_dashboard(update: Update, context: ContextTypes.DE
     
     await query.edit_message_text(text=final_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message_id_to_edit: int, chat_id: int) -> None:
+async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, selected_date: date) -> None:
     """
-    Отображает меню выбора дисциплин для отчета 'Проблемные бригады'.
-    (ИСПРАВЛЕННАЯ ВЕРСИЯ: убрана лишняя логика и повторный query.answer())
+    Отображает меню 'Проблемные бригады' для УКАЗАННОЙ ДАТЫ.
     """
-    # Сразу сообщаем пользователю, что мы работаем
+    query = update.callback_query
+    chat_id = query.message.chat_id
+    message_id_to_edit = query.message.message_id
+
     await context.bot.edit_message_text(
-        chat_id=chat_id,
-        message_id=message_id_to_edit,
+        chat_id=chat_id, message_id=message_id_to_edit,
         text="⏳ Собираю сводку по проблемным бригадам..."
     )
 
     disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
     keyboard = []
-    summary_lines = ["*⚠️ Проблемные бригады на сегодня:*", ""]
-    today_str = date.today().strftime('%Y-%m-%d')
+    date_str_for_query = selected_date.strftime('%Y-%m-%d')
+    date_str_for_callback = selected_date.strftime('%Y-%m-%d')
+    
+    summary_lines = [f"*⚠️ Проблемные бригады на {selected_date.strftime('%d.%m.%Y')}:*", ""]
 
     if not disciplines:
         await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id_to_edit,
+            chat_id=chat_id, message_id=message_id_to_edit,
             text="В системе нет дисциплин для анализа.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")]])
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="handle_problem_brigades_button")]])
         )
         return
 
-    # Улучшенный и более надежный подсчет
     for disc_id, disc_name in disciplines:
-        non_reporters_query = """
-            SELECT COUNT(b.user_id)
-            FROM brigades b
-            WHERE b.discipline = %s AND NOT EXISTS (
-                SELECT 1 FROM reports r
-                WHERE r.foreman_name = b.brigade_name AND r.report_date = %s
-            )
-        """
-        non_reporters_raw = db_query(non_reporters_query, (disc_id, today_str))
+        non_reporters_query = "SELECT COUNT(b.user_id) FROM brigades b WHERE b.discipline = %s AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.foreman_name = b.brigade_name AND r.report_date = %s)"
+        non_reporters_raw = db_query(non_reporters_query, (disc_id, date_str_for_query))
         non_reporters_count = non_reporters_raw[0][0] if non_reporters_raw else 0
 
-        # Более понятный текст для пользователя
         if non_reporters_count > 0:
             summary_lines.append(f"🔴 *{disc_name}:* не отчитались - *{non_reporters_count}*")
         else:
             summary_lines.append(f"🟢 *{disc_name}:* все отчитались")
 
-        keyboard.append([InlineKeyboardButton(f"Детально по «{disc_name}»", callback_data=f"gen_problem_report_{disc_id}_1")])
-
+        # Передаем ID и ДАТУ в callback
+        keyboard.append([InlineKeyboardButton(f"Детально по «{disc_name}»", callback_data=f"gen_problem_report_{disc_id}_{date_str_for_callback}_1")])
 
     summary_lines.append("\nВыберите дисциплину для детального просмотра:")
-    keyboard.append([InlineKeyboardButton("◀️ Назад в меню отчетов", callback_data="report_menu_all")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад к выбору даты", callback_data="handle_problem_brigades_button")])
 
     await context.bot.edit_message_text(
-        chat_id=chat_id,
-        message_id=message_id_to_edit,
+        chat_id=chat_id, message_id=message_id_to_edit,
         text="\n".join(summary_lines),
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
 
-async def generate_problem_brigades_report(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_id: int = None, page: int = 1) -> None:
+async def generate_problem_brigades_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Генерирует отчет по проблемным бригадам (ИСПРАВЛЕНА ОШИБКА UnboundLocalError).
+    Генерирует отчет по проблемным бригадам, принимая ID дисциплины и ДАТУ из callback.
     """
     query = update.callback_query
     await query.answer()
 
-    # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
-    # Четко определяем переменные в самом начале, чтобы избежать ошибок
-    local_discipline_id = discipline_id
-    local_page = page
+    try:
+        parts = query.data.split('_')
+        discipline_id = int(parts[3])
+        date_str = parts[4]
+        page = int(parts[5])
+        selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except (IndexError, ValueError):
+        await query.edit_message_text("❌ Ошибка: Не удалось прочитать данные из кнопки.")
+        return
 
-    # Если функция вызвана нажатием кнопки (для админа), то параметры будут пустыми.
-    # В этом случае мы считываем их из данных кнопки.
-    if local_discipline_id is None:
-        try:
-            parts = query.data.split('_')
-            local_discipline_id = int(parts[3])
-            local_page = int(parts[4]) if len(parts) > 4 else 1
-        except (IndexError, ValueError):
-            await query.edit_message_text("❌ Ошибка: Не удалось прочитать данные из кнопки.")
-            return
-    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-            
-    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (local_discipline_id,))
+    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
     if not discipline_name_raw:
         await query.edit_message_text("Ошибка: Дисциплина не найдена по ID.")
         return
@@ -1863,33 +1848,17 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
     
     user_id = str(query.from_user.id)
     lang = get_user_language(user_id)
-    
     await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
 
     try:
-        today_str = date.today().strftime('%Y-%m-%d')
-        
-        non_reporters_query = """
-            SELECT b.brigade_name 
-            FROM brigades b
-            WHERE b.discipline = %s AND NOT EXISTS (
-                SELECT 1 FROM reports r WHERE r.foreman_name = b.brigade_name AND r.report_date = %s
-            ) ORDER BY b.brigade_name
-        """
-        non_reporters_raw = db_query(non_reporters_query, (local_discipline_id, today_str))
+        non_reporters_query = "SELECT b.brigade_name FROM brigades b WHERE b.discipline = %s AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.foreman_name = b.brigade_name AND r.report_date = %s) ORDER BY b.brigade_name"
+        non_reporters_raw = db_query(non_reporters_query, (discipline_id, date_str))
         non_reporters = [row[0] for row in non_reporters_raw] if non_reporters_raw else []
 
         engine = create_engine(DATABASE_URL)
-        
-        pd_query = """
-            SELECT r.foreman_name, r.people_count, r.volume, wt.norm_per_unit, wt.name as work_type_name_alias
-            FROM reports r 
-            JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
-            WHERE r.discipline_name = :discipline_name AND r.report_date = :today
-        """
-        
+        pd_query = "SELECT r.foreman_name, r.people_count, r.volume, wt.norm_per_unit, wt.name as work_type_name_alias FROM reports r JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id) WHERE r.discipline_name = :discipline_name AND r.report_date = :report_date"
         with engine.connect() as connection:
-            df = pd.read_sql_query(text(pd_query), connection, params={'discipline_name': discipline_name, 'today': today_str})
+            df = pd.read_sql_query(text(pd_query), connection, params={'discipline_name': discipline_name, 'report_date': date_str})
 
         low_performers_series = pd.Series(dtype='float64')
         if not df.empty:
@@ -1897,47 +1866,37 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
             if not performance_df.empty:
                 performance_df['planned_volume'] = pd.to_numeric(performance_df['people_count'], errors='coerce') * pd.to_numeric(performance_df['norm_per_unit'], errors='coerce')
                 mask = performance_df['planned_volume'] > 0
-                performance_df['output_percentage'] = 100.0
                 performance_df.loc[mask, 'output_percentage'] = (pd.to_numeric(performance_df.loc[mask, 'volume']) / performance_df.loc[mask, 'planned_volume']) * 100
-                
                 avg_performance = performance_df.groupby('foreman_name')['output_percentage'].mean()
                 low_performers_series = avg_performance[avg_performance < 100].sort_values()
 
-        user_role = check_user_role(user_id)
-        back_callback = "report_menu_all" 
-        if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-            back_callback = "handle_problem_brigades_button"
+        back_callback = "handle_problem_brigades_button"
         
         if not non_reporters and low_performers_series.empty:
             await query.edit_message_text(
-                get_text('problem_brigades_no_issues', lang).format(discipline=get_data_translation(discipline_name, lang)),
+                f"На {selected_date.strftime('%d.%m.%Y')} проблемных бригад по дисциплине «{discipline_name}» не найдено.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(get_text('back_button', lang), callback_data=back_callback)]]),
                 parse_mode="Markdown"
             )
             return
         
-        message_lines = [f"*{get_text('problem_brigades_title', lang).format(discipline=get_data_translation(discipline_name, lang))}*"]
-        
+        message_lines = [f"*Проблемные бригады по дисциплине «{discipline_name}» за {selected_date.strftime('%d.%m.%Y')}*"]
         if non_reporters:
-            message_lines.append(f"\n*{get_text('problem_brigades_no_report_header', lang)}*")
-            for name in non_reporters:
-                message_lines.append(f"- {name}")
-        
+            message_lines.append("\n*Не сдали отчет:*")
+            for name in non_reporters: message_lines.append(f"- {name}")
         if not low_performers_series.empty:
-            message_lines.append(f"\n*{get_text('problem_brigades_low_performance_header', lang)}*")
+            message_lines.append("\n*Низкая выработка (<100%):*")
             message_lines.append("`")
             max_name_len = max(len(name) for name in low_performers_series.index) + 2 if low_performers_series.index.any() else 20
-            
-            for name, perc in low_performers_series.items():
-                message_lines.append(f"{name.ljust(max_name_len)}: {perc:.1f}%")
+            for name, perc in low_performers_series.items(): message_lines.append(f"{name.ljust(max_name_len)}: {perc:.1f}%")
             message_lines.append("`")
 
-        keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data=back_callback)]]
+        keyboard = [[InlineKeyboardButton("◀️ Назад к выбору даты", callback_data=back_callback)]]
         await query.edit_message_text(text="\n".join(message_lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     except Exception as e:
         logger.error(f"Ошибка при генерации отчета 'Проблемные бригады': {e}")
-        await query.edit_message_text(f"❌ {get_text('error_generic', lang)}")
+        await query.edit_message_text("❌ Ошибка при генерации детального отчета.")
 
 async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Показывает пользователю информацию о его профиле и роли (МНОГОЯЗЫЧНАЯ ВЕРСИЯ)."""
@@ -2283,6 +2242,36 @@ async def set_discipline(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
+
+async def show_problem_brigades_by_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Обрабатывает выбор даты ('Сегодня'/'Вчера') и вызывает нужную функцию в зависимости от роли.
+    """
+    query = update.callback_query
+    await query.answer()
+
+    period = query.data.split('_')[-1]
+    selected_date = date.today() if period == 'today' else date.today() - timedelta(days=1)
+
+    user_role = check_user_role(str(query.from_user.id))
+
+    # Если это Админ, показываем меню выбора дисциплин
+    if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
+        await show_problem_brigades_menu(update, context, selected_date=selected_date)
+    # Иначе сразу генерируем отчет для их дисциплины
+    else:
+        discipline_name = user_role.get('discipline')
+        if not discipline_name:
+            await query.edit_message_text("Ошибка: для вашей роли не задана дисциплина.")
+            return
+
+        discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
+        if not discipline_id_raw:
+            await query.edit_message_text(f"Ошибка: Не удалось найти ID для дисциплины «{discipline_name}».")
+            return
+        discipline_id = discipline_id_raw[0][0]
+
+        await generate_problem_brigades_report(update, context, discipline_id=discipline_id, selected_date=selected_date, page=1)
 
 # --- ЛОГИКА УПравления отчетами ---
 
@@ -4603,38 +4592,23 @@ async def generate_discipline_personnel_report(update: Update, context: ContextT
         await query.edit_message_text("❌ Произошла ошибка при формировании отчета.")
 
 async def handle_problem_brigades_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Корректно обрабатывает нажатие кнопки 'Проблемные бригады' в зависимости от роли."""
+    """
+    Показывает меню выбора даты для отчета 'Проблемные бригады'.
+    """
     query = update.callback_query
     await query.answer()
+    lang = get_user_language(str(query.from_user.id))
 
-    user_id = str(query.from_user.id)
-    user_role = check_user_role(user_id)
-
-    # Определяем, есть ли сообщение для редактирования
-    message_id_to_edit = query.message.message_id if query else None
-    chat_id = query.message.chat_id if query else None
-
-    # Сценарий для Руководителя 2 ур., ПТО, КИОК
-    if user_role.get('discipline') and (user_role.get('isManager') and user_role.get('managerLevel') == 2 or user_role.get('isPto') or user_role.get('isKiok')):
-        discipline_name = user_role['discipline']
-        
-        # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
-        # Получаем ID дисциплины по ее названию
-        discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
-        if not discipline_id_raw:
-            await query.edit_message_text(f"Ошибка: Не удалось определить ID для вашей дисциплины «{discipline_name}».")
-            return
-        
-        discipline_id = discipline_id_raw[0][0]
-        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
-
-        # Вызываем генератор отчета с корректным ID
-        await generate_problem_brigades_report(update, context, discipline_id=discipline_id, page=1)
-        return
-    
-    # Сценарий для Админа и Руководителя 1 ур. (остается без изменений)
-    else:
-        await show_problem_brigades_menu(update, context, message_id_to_edit=message_id_to_edit, chat_id=chat_id)
+    keyboard = [
+        [InlineKeyboardButton("Сегодня", callback_data="problem_brigades_by_date_today")],
+        [InlineKeyboardButton("Вчера", callback_data="problem_brigades_by_date_yesterday")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="report_menu_all")]
+    ]
+    await query.edit_message_text(
+        text="*⚠️ Проблемные бригады*\n\nВыберите период для просмотра отчета:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
 
 # --- Доп функции - Исторический отчет табель ---
 
@@ -5528,6 +5502,8 @@ def main() -> None:
     application.add_handler(CallbackQueryHandler(show_hr_menu, pattern="^hr_menu$"))
     application.add_handler(CallbackQueryHandler(show_paginated_brigade_report, pattern="^hr_report_"))
     application.add_handler(CallbackQueryHandler(select_language_menu, pattern="^select_language$"))
+    application.add_handler(CallbackQueryHandler(show_problem_brigades_by_date, pattern="^problem_brigades_by_date_"))
+    application.add_handler(CallbackQueryHandler(process_problem_brigades_date_selection, pattern="^problem_brigades_date_"))
     
     
     
