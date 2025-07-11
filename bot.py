@@ -4605,15 +4605,26 @@ async def handle_problem_brigades_button(update: Update, context: ContextTypes.D
     message_id_to_edit = query.message.message_id if query else None
     chat_id = query.message.chat_id if query else None
 
-    # Если пользователь - Рук. 2 уровня, ПТО или КИОК (т.е. у него есть закрепленная дисциплина)
+    # Сценарий для Руководителя 2 ур., ПТО, КИОК
     if user_role.get('discipline') and (user_role.get('isManager') and user_role.get('managerLevel') == 2 or user_role.get('isPto') or user_role.get('isKiok')):
         discipline_name = user_role['discipline']
-        # Сразу вызываем генератор отчета для нужной дисциплины
-        await generate_problem_brigades_report(update, context, discipline_name=discipline_name, page=1)
-        return # Важно выйти из функции
-    # Иначе (для Админа и Рук. 1 уровня) показываем меню выбора дисциплин
+        
+        # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
+        # Получаем ID дисциплины по ее названию
+        discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (discipline_name,))
+        if not discipline_id_raw:
+            await query.edit_message_text(f"Ошибка: Не удалось определить ID для вашей дисциплины «{discipline_name}».")
+            return
+        
+        discipline_id = discipline_id_raw[0][0]
+        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+
+        # Вызываем генератор отчета с корректным ID
+        await generate_problem_brigades_report(update, context, discipline_id=discipline_id, page=1)
+        return
+    
+    # Сценарий для Админа и Руководителя 1 ур. (остается без изменений)
     else:
-        # Теперь show_problem_brigades_menu будет принимать message_id_to_edit
         await show_problem_brigades_menu(update, context, message_id_to_edit=message_id_to_edit, chat_id=chat_id)
 
 # --- Доп функции - Исторический отчет табель ---
