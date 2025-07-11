@@ -1819,7 +1819,8 @@ async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAU
         else:
             summary_lines.append(f"🟢 *{disc_name}:* все отчитались")
 
-        keyboard.append([InlineKeyboardButton(f"Детально по «{disc_name}»", callback_data=f"gen_problem_report_{disc_name}_1")])
+        keyboard.append([InlineKeyboardButton(f"Детально по «{disc_name}»", callback_data=f"gen_problem_report_{disc_id}_1")])
+
 
     summary_lines.append("\nВыберите дисциплину для детального просмотра:")
     keyboard.append([InlineKeyboardButton("◀️ Назад в меню отчетов", callback_data="report_menu_all")])
@@ -1837,10 +1838,16 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
     query = update.callback_query
     await query.answer()
 
-    if discipline_name is None:
+    if discipline_id is None:
         parts = query.data.split('_')
-        discipline_name = parts[3]
+        discipline_id = int(parts[3])
         page = int(parts[4]) if len(parts) > 4 else 1
+
+    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
+    if not discipline_name_raw:
+        await query.edit_message_text("Ошибка: Дисциплина не найдена по ID.")
+        return
+    discipline_name = discipline_name_raw[0][0]
     
     user_id = str(query.from_user.id)
     lang = get_user_language(user_id)
@@ -1853,16 +1860,16 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
         # 1. Получаем список тех, кто не сдал отчет
         non_reporters_query = """
             SELECT b.brigade_name 
-            FROM brigades b JOIN disciplines d ON b.discipline = d.id
-            WHERE d.name = %s AND NOT EXISTS (
+            FROM brigades b
+            WHERE b.discipline = %s AND NOT EXISTS (
                 SELECT 1 FROM reports r WHERE r.foreman_name = b.brigade_name AND r.report_date = %s
             ) ORDER BY b.brigade_name
         """
-        non_reporters_raw = db_query(non_reporters_query, (discipline_name, today_str))
+        non_reporters_raw = db_query(non_reporters_query, (discipline_id, today_str))
         non_reporters = [row[0] for row in non_reporters_raw] if non_reporters_raw else []
 
-        # 2. Получаем список тех, у кого низкая выработка
         engine = create_engine(DATABASE_URL)
+        
         
         # --- ИСПРАВЛЕНИЕ ЗДЕСЬ: Убран "AND r.kiok_approved = 1" ---
         pd_query = """
@@ -1880,16 +1887,13 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
             performance_df = df[~df['work_type_name_alias'].str.contains('Прочие', case=False, na=False)].copy()
             if not performance_df.empty:
                 performance_df['planned_volume'] = pd.to_numeric(performance_df['people_count'], errors='coerce') * pd.to_numeric(performance_df['norm_per_unit'], errors='coerce')
-                # Добавляем маску, чтобы избежать деления на ноль
                 mask = performance_df['planned_volume'] > 0
-                # Инициализируем колонку со 100% на случай, если план 0, но факт есть.
                 performance_df['output_percentage'] = 100.0
                 performance_df.loc[mask, 'output_percentage'] = (pd.to_numeric(performance_df.loc[mask, 'volume']) / performance_df.loc[mask, 'planned_volume']) * 100
                 
                 avg_performance = performance_df.groupby('foreman_name')['output_percentage'].mean()
                 low_performers_series = avg_performance[avg_performance < 100].sort_values()
 
-        # --- Формируем итоговое сообщение ---
         user_role = check_user_role(user_id)
         back_callback = "report_menu_all" 
         if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
@@ -4615,11 +4619,7 @@ async def handle_problem_brigades_button(update: Update, context: ContextTypes.D
 # --- Доп функции - Исторический отчет табель ---
 
 async def show_hr_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ:
-    Показывает меню 'Людские ресурсы' со сводкой и выбором дисциплин,
-    корректно фильтруя и сводку, и кнопки по роли пользователя.
-    """
+    """Показывает меню 'Людские ресурсы', ИСПОЛЬЗУЯ ID ДИСЦИПЛИН в кнопках."""
     query = update.callback_query
     await query.answer()
 
@@ -4631,7 +4631,6 @@ async def show_hr_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     today_str = date.today().strftime('%Y-%m-%d')
     
-    # === ИСПРАВЛЕНИЕ: Формируем запрос и параметры с учетом роли ===
     base_query = """
         SELECT SUM(dr.total_people), d.name, COUNT(DISTINCT dr.brigade_user_id)
         FROM daily_rosters dr
@@ -4641,7 +4640,6 @@ async def show_hr_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """
     params = [today_str]
 
-    # Если пользователь не админ/рук.1 ур., добавляем фильтр по дисциплине
     if not (user_role.get('isAdmin') or user_role.get('managerLevel') == 1):
         user_discipline = user_role.get('discipline')
         if user_discipline:
@@ -4650,7 +4648,6 @@ async def show_hr_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     base_query += " GROUP BY d.name ORDER BY d.name"
     summary_data = db_query(base_query, tuple(params))
-    # === КОНЕЦ ИСПРАВЛЕНИЯ ===
 
     title = get_text('hr_summary_title', lang)
     message_lines = [f"*{title}*"]
@@ -4674,76 +4671,83 @@ async def show_hr_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     message_lines.append(f"\n\n*{get_text('hr_discipline_select_prompt', lang)}*")
 
-    # Этот блок уже работал правильно, он без изменений
     keyboard = []
+    # ИЗМЕНЕНИЕ: Запрашиваем ID и NAME, в кнопку передаем ID
     if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-        disciplines_for_buttons = db_query("SELECT name FROM disciplines ORDER BY name")
+        disciplines_for_buttons = db_query("SELECT id, name FROM disciplines ORDER BY name")
         if disciplines_for_buttons:
-             disc_buttons = [InlineKeyboardButton(get_data_translation(d_name, lang), callback_data=f"hr_report_today_{d_name}_1") for d_name, in disciplines_for_buttons]
+             disc_buttons = [InlineKeyboardButton(get_data_translation(d_name, lang), callback_data=f"hr_report_today_{d_id}_1") for d_id, d_name in disciplines_for_buttons]
              keyboard.extend([disc_buttons[i:i + 2] for i in range(0, len(disc_buttons), 2)])
     else:
         user_discipline = user_role.get('discipline')
         if user_discipline:
-            keyboard.append([InlineKeyboardButton(get_data_translation(user_discipline, lang), callback_data=f"hr_report_today_{user_discipline}_1")])
+            discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (user_discipline,))
+            if discipline_id_raw:
+                user_discipline_id = discipline_id_raw[0][0]
+                keyboard.append([InlineKeyboardButton(get_data_translation(user_discipline, lang), callback_data=f"hr_report_today_{user_discipline_id}_1")])
 
     keyboard.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="report_menu_all")])
     await query.edit_message_text("\n".join(message_lines), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-async def show_paginated_brigade_report(update: Update, context: ContextTypes.DEFAULT_TYPE, start_date_override: date = None, end_date_override: date = None) -> None:
-    """ФИНАЛЬНЫЙ универсальный постраничный отчет по бригадам."""
-    query = update.callback_query
-    
-    # Определяем user_id и lang в самом начале
-    if query:
-        user_id = str(query.from_user.id)
-    else: 
-        user_id = str(update.effective_user.id)
-    lang = get_user_language(user_id)
 
-    # Отвечаем на запрос и показываем сообщение о загрузке
+async def show_paginated_brigade_report(update: Update, context: ContextTypes.DEFAULT_TYPE, start_date_override: date = None, end_date_override: date = None) -> None:
+    """Финальный отчет по бригадам, ПРИНИМАЮЩИЙ ID ДИСЦИПЛИНЫ (исправлена ошибка NameError)."""
+    query = update.callback_query
+    wait_msg = None  # Инициализируем переменную
+
+    # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
     if query:
+        # Сценарий 1: Пользователь нажал на кнопку
+        user_id = str(query.from_user.id)
+        lang = get_user_language(user_id)
         await query.answer()
         await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
-    else: # Вызвано из ConversationHandler
-        await context.bot.delete_message(chat_id=user_id, message_id=context.user_data.pop('last_bot_message_id', None))
+        wait_msg = query.message
+    else:
+        # Сценарий 2: Пользователь ввел дату текстом
+        user_id = str(update.effective_user.id)
+        lang = get_user_language(user_id)
         await update.message.delete()
-
-    # --- Определяем параметры отчета ---
+        # Создаем новое сообщение "Пожалуйста, подождите..."
+        wait_msg = await context.bot.send_message(chat_id=user_id, text=f"⏳ {get_text('loading_please_wait', lang)}")
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+    
     page = 1
     report_date = date.today()
-    discipline_name = context.user_data.get('hr_discipline_filter')
+    discipline_id = context.user_data.get('hr_discipline_filter')
 
     if query:
         parts = query.data.split('_')
         period = parts[2]
-        discipline_name = parts[3]
+        discipline_id = int(parts[3])
         page = int(parts[4])
-        context.user_data['hr_discipline_filter'] = discipline_name
+        context.user_data['hr_discipline_filter'] = discipline_id
         if period == 'yesterday': 
             report_date = date.today() - timedelta(days=1)
     
     if start_date_override: 
         report_date = start_date_override
-        # Для пагинации нам нужно знать, какой сейчас период
-        period = report_date.strftime('%Y-%m-%d')
+    
+    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
+    if not discipline_name_raw:
+        await wait_msg.edit_text("Ошибка: Дисциплина не найдена по ID.")
+        return
+    discipline_name = discipline_name_raw[0][0]
 
     report_date_str = report_date.strftime('%Y-%m-%d')
     
-    # 1. Запрос на получение всех бригад для пагинации
     brigades_q = db_query(
-        "SELECT b.brigade_name FROM daily_rosters dr JOIN brigades b ON dr.brigade_user_id = b.user_id JOIN disciplines d ON b.discipline = d.id WHERE dr.roster_date = %s AND d.name = %s ORDER BY b.brigade_name",
-        (report_date_str, discipline_name)
+        "SELECT b.brigade_name FROM daily_rosters dr JOIN brigades b ON dr.brigade_user_id = b.user_id WHERE dr.roster_date = %s AND b.discipline = %s ORDER BY b.brigade_name",
+        (report_date_str, discipline_id)
     )
     all_brigades = [row[0] for row in brigades_q] if brigades_q else []
     
-    # 2. Пагинация
     items_per_page = 5
     total_pages = math.ceil(len(all_brigades) / items_per_page) if all_brigades else 1
     page = max(1, min(page, total_pages))
     start_index = (page - 1) * items_per_page
     brigades_on_page = all_brigades[start_index : start_index + items_per_page]
 
-    # 3. Собираем детальную информацию
     brigade_reports = {}
     for b_name in brigades_on_page:
         details_q = db_query("""
@@ -4756,11 +4760,9 @@ async def show_paginated_brigade_report(update: Update, context: ContextTypes.DE
         """, (report_date_str, b_name))
         
         if details_q:
-            # ИСПРАВЛЕНИЕ: Переводим названия должностей
             brigade_reports[b_name] = {'total': details_q[0][0], 'roles': [f"  - {get_data_translation(role, lang)}: {count}" for _, role, count in details_q]}
 
-    # 4. Формируем сообщение
-    disc_summary_q = db_query("SELECT SUM(dr.total_people), COUNT(DISTINCT dr.brigade_user_id) FROM daily_rosters dr JOIN brigades b ON dr.brigade_user_id = b.user_id JOIN disciplines d ON b.discipline = d.id WHERE dr.roster_date = %s AND d.name = %s", (report_date_str, discipline_name))
+    disc_summary_q = db_query("SELECT SUM(dr.total_people), COUNT(DISTINCT dr.brigade_user_id) FROM daily_rosters dr JOIN brigades b ON dr.brigade_user_id = b.user_id WHERE dr.roster_date = %s AND b.discipline = %s", (report_date_str, discipline_id))
     disc_total_people, disc_brigade_count = (disc_summary_q[0][0] or 0, disc_summary_q[0][1] or 0) if disc_summary_q else (0,0)
 
     title = get_text('hr_report_title', lang).format(discipline=get_data_translation(discipline_name, lang), date=report_date.strftime('%d.%m.%Y'))
@@ -4774,9 +4776,8 @@ async def show_paginated_brigade_report(update: Update, context: ContextTypes.DE
             message_lines.append(f"\n*{i}. {get_data_translation(brigade_name, lang)}* ({get_text('total_declared', lang).format(total=data['total'])})")
             message_lines.extend(data['roles'])
 
-    # 5. Формируем кнопки
     keyboard = []
-    # Определяем текущий период для callback'ов пагинации
+    
     if isinstance(report_date, date) and report_date == date.today():
         current_period_for_callback = 'today'
     elif isinstance(report_date, date) and report_date == date.today() - timedelta(days=1):
@@ -4784,40 +4785,41 @@ async def show_paginated_brigade_report(update: Update, context: ContextTypes.DE
     else:
         current_period_for_callback = report_date.strftime('%Y-%m-%d')
 
-
     pagination_buttons = []
-    if page > 1: pagination_buttons.append(InlineKeyboardButton("◀️", callback_data=f"hr_report_{current_period_for_callback}_{discipline_name}_{page - 1}"))
-    if page < total_pages: pagination_buttons.append(InlineKeyboardButton("▶️", callback_data=f"hr_report_{current_period_for_callback}_{discipline_name}_{page + 1}"))
+    if page > 1: pagination_buttons.append(InlineKeyboardButton("◀️", callback_data=f"hr_report_{current_period_for_callback}_{discipline_id}_{page - 1}"))
+    if page < total_pages: pagination_buttons.append(InlineKeyboardButton("▶️", callback_data=f"hr_report_{current_period_for_callback}_{discipline_id}_{page + 1}"))
     if pagination_buttons: keyboard.append(pagination_buttons)
 
     date_buttons = [
-        InlineKeyboardButton(get_text('yesterday_button', lang), callback_data=f"hr_report_yesterday_{discipline_name}_1"),
-        InlineKeyboardButton(get_text('today_button', lang), callback_data=f"hr_report_today_{discipline_name}_1"),
-        InlineKeyboardButton(get_text('pick_date_button', lang), callback_data=f"hr_date_select_{discipline_name}")
+        InlineKeyboardButton(get_text('yesterday_button', lang), callback_data=f"hr_report_yesterday_{discipline_id}_1"),
+        InlineKeyboardButton(get_text('today_button', lang), callback_data=f"hr_report_today_{discipline_id}_1"),
+        InlineKeyboardButton(get_text('pick_date_button', lang), callback_data=f"hr_date_select_{discipline_id}")
     ]
     keyboard.append(date_buttons)
     keyboard.append([InlineKeyboardButton(get_text('back_button', lang), callback_data="hr_menu")])
 
-    # Редактируем сообщение, которое показали в самом начале ("Пожалуйста, подождите...")
     await context.bot.edit_message_text(
-        chat_id=query.message.chat_id if query else user_id,
-        message_id=query.message.message_id if query else None,
+        chat_id=user_id,
+        message_id=wait_msg.message_id,
         text="\n".join(message_lines), 
         reply_markup=InlineKeyboardMarkup(keyboard), 
         parse_mode="Markdown"
     )
 
 async def get_hr_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Запрашивает дату для отчета по персоналу."""
+    """Запрашивает дату для отчета по персоналу, ПРИНИМАЯ ID ДИСЦИПЛИНЫ."""
     query = update.callback_query
     await query.answer()
     user_id = str(query.from_user.id)
     lang = get_user_language(user_id)
-    context.user_data['hr_discipline_filter'] = query.data.split('_')[-1]
+    
+    # ИЗМЕНЕНИЕ: Сохраняем ID дисциплины, а не имя
+    discipline_id = query.data.split('_')[-1]
+    context.user_data['hr_discipline_filter'] = int(discipline_id)
 
     message = await query.edit_message_text(get_text('history_prompt_date', lang), parse_mode="Markdown")
     context.user_data['last_bot_message_id'] = message.message_id
-    return GETTING_HR_DATE # Используем простое число для состояния
+    return GETTING_HR_DATE
 
 async def process_hr_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает введенную дату и вызывает отчет."""
