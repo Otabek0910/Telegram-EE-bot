@@ -1089,49 +1089,56 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     parts = query.data.split('_')
     period = parts[2] if len(parts) > 2 else 'all'
     
+    # --- ИСПРАВЛЕНИЕ: Логика определения даты для запросов ---
     date_filter_sql = ""
     date_params = []
+    # Добавляем переменную для даты, используемой в сводке (по умолчанию сегодня)
+    target_date_for_summary = date.today()
+    period_text = get_text('all_time_button', lang)
     
     if period == 'today':
+        target_date_for_summary = date.today()
         date_filter_sql = "AND report_date = %s"
-        date_params.append(date.today().strftime('%Y-%m-%d'))
+        date_params.append(target_date_for_summary.strftime('%Y-%m-%d'))
         period_text = get_text('today_button', lang)
     elif period == 'yesterday':
+        target_date_for_summary = date.today() - timedelta(days=1)
         date_filter_sql = "AND report_date = %s"
-        date_params.append((date.today() - timedelta(days=1)).strftime('%Y-%m-%d'))
+        date_params.append(target_date_for_summary.strftime('%Y-%m-%d'))
         period_text = get_text('yesterday_button', lang)
-    else: # period == 'all'
-        period_text = get_text('all_time_button', lang)
-
+    
     try:
         if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
             brigade_details_query = """
                 SELECT 
                     d.name,
                     (SELECT COUNT(*) FROM brigades WHERE discipline = d.id) as total_brigades,
-                    (SELECT COUNT(DISTINCT b.user_id) FROM brigades b JOIN reports r ON b.brigade_name = r.foreman_name WHERE b.discipline = d.id AND r.report_date = CURRENT_DATE) as reported_count
+                    (SELECT COUNT(DISTINCT b.user_id) FROM brigades b JOIN reports r ON b.brigade_name = r.foreman_name WHERE b.discipline = d.id AND r.report_date = %s) as reported_count
                 FROM disciplines d
                 ORDER BY d.name;
             """
-            brigade_counts_raw = db_query(brigade_details_query)
+            date_for_header = date.today() if period == 'all' else target_date_for_summary
+            brigade_counts_raw = db_query(brigade_details_query, (date_for_header,))
             
             total_brigades = sum(total for _, total, _ in brigade_counts_raw) if brigade_counts_raw else 0
             
             brigade_details_lines = []
             if brigade_counts_raw:
+                # ИЗМЕНЕНИЕ 1: Скрываем дисциплины, где 0 бригад
                 for disc_name, total, reported in brigade_counts_raw:
-                    line = f"    - {get_data_translation(disc_name, lang)}: *{total}* (сдали отчет: *{reported}*)"
-                    brigade_details_lines.append(line)
+                    if total > 0:
+                        line = f"    - {get_data_translation(disc_name, lang)}: *{total}* (сдали отчет: *{reported}*)"
+                        brigade_details_lines.append(line)
             
             message_text_intro = (
                 f"📊 *{get_text('report_menu_summary_title', lang).format(period=period_text)}*\n\n"
                 f"▪️ {get_text('total_brigades_in_system', lang)} *{total_brigades}*\n"
                 + "\n".join(brigade_details_lines)
             )
-            # === КОНЕЦ ИЗМЕНЕНИЯ ===
+
             final_params = tuple(date_params)
             role_filter_sql = ""
-        
+
         elif user_role.get('isForeman'):
              brigade_name = user_role.get('brigadeName')
              role_filter_sql = "AND foreman_name = %s"
@@ -1166,7 +1173,7 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         pending = status_counts.get(0, 0)
 
         message_text = (
-            message_text_intro + "\n" +
+            message_text_intro + "\n\n" +
             f"▪️ {get_text('reports_for_period', lang)} *{total_reports}*\n"
             f"    - {get_text('reports_approved', lang)} *{approved}*\n"
             f"    - {get_text('reports_rejected', lang)} *{rejected}*\n"
@@ -1215,12 +1222,19 @@ async def report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode='Markdown'
     )
 
-async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-   
+async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, selected_date_override: date = None) -> int:
+    """
+    ОБНОВЛЕННАЯ ВЕРСИЯ:
+    Основная функция для отображения сводки 'Общий обзор'.
+    Теперь может принимать дату напрямую, что упрощает обработку ручного ввода.
+    """
     query = update.callback_query
     
+    # Определяем дату
     selected_date = date.today()
-    if query:
+    if selected_date_override:
+        selected_date = selected_date_override
+    elif query:
         await query.answer()
         if query.data.startswith("report_overview_date_"):
             date_str = query.data.split('_')[-1]
@@ -1234,7 +1248,6 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                 except ValueError:
                     selected_date = date.today()
 
-    # Сохраняем выбранную дату в контекст для следующих шагов (выбора дисциплин и построения графика)
     context.user_data['overview_date'] = selected_date.strftime('%Y-%m-%d')
     date_str_for_callback = context.user_data['overview_date']
     
@@ -1242,15 +1255,18 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
     lang = get_user_language(user_id)
     user_role = check_user_role(user_id)
     
-    # Сначала удаляем старое сообщение, потом отправляем новое "Пожалуйста, подождите"
+    # Удаляем сообщение, которое вызвало эту функцию
+    # (либо от кнопки, либо текстовое сообщение с датой)
     if query and query.message:
         await query.message.delete()
+    elif update.message:
+        await update.message.delete()
+
     wait_msg = await context.bot.send_message(update.effective_chat.id, f"⏳ {get_text('loading_please_wait', lang)}")
 
     try:
         engine = create_engine(DATABASE_URL)
         
-        # Запрос не изменился, фильтрация по роли и дате остается
         pd_query = """
             SELECT r.discipline_name, r.work_type_name, r.people_count, r.volume, wt.norm_per_unit
             FROM reports r
@@ -1259,7 +1275,6 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         """
         params = {'selected_date': selected_date.strftime('%Y-%m-%d')}
 
-        # Фильтрация по дисциплине для ролей ПТО и Рук. 2 ур.
         if not (user_role.get('isAdmin') or user_role.get('managerLevel') == 1):
             user_discipline = user_role.get('discipline')
             if not user_discipline:
@@ -1291,7 +1306,6 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
                 total_people = int(disc_df['people_count'].sum() + disc_other_df['people_count'].sum())
                 
-                # === ИСПРАВЛЕНИЕ: Группируем данные по видам работ ===
                 if not disc_df.empty:
                     work_summary = disc_df.groupby('work_type_name').agg(
                         total_volume=('volume', 'sum'),
@@ -1300,12 +1314,10 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                     ).reset_index()
                     work_summary['performance'] = (work_summary['total_volume'] / work_summary['total_planned']) * 100
                     
-                    # Считаем среднюю выработку по дисциплине в целом
                     avg_performance = (work_summary['total_volume'].sum() / work_summary['total_planned'].sum() * 100) if work_summary['total_planned'].sum() > 0 else 0
                 else:
-                    work_summary = pd.DataFrame() # Пустой DataFrame, если нет данных
+                    work_summary = pd.DataFrame()
                     avg_performance = 0
-                # === КОНЕЦ ИСПРАВЛЕНИЯ ===
 
                 message_lines.append("\n" + "─" * 15)
                 message_lines.append(f"*{get_data_translation(discipline, lang)}*")
@@ -1330,9 +1342,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         
         keyboard_buttons = [date_buttons]
 
-            # Для Админов/Рук. 1 ур. - сразу список дисциплин для графика
         if user_role.get('isAdmin') or user_role.get('managerLevel') == 1:
-           # === ИЗМЕНЕНИЕ: Запрашиваем ID и NAME, в кнопку передаем ID ===
            disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
            if disciplines:
               for disc_id, disc_name in disciplines:
@@ -1341,7 +1351,6 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         elif user_role.get('isPto') or user_role.get('managerLevel') == 2:
            user_discipline_name = user_role.get('discipline')
            if user_discipline_name:
-            # Получаем ID дисциплины пользователя
              discipline_id_raw = db_query("SELECT id FROM disciplines WHERE name = %s", (user_discipline_name,))
              if discipline_id_raw:
                 user_discipline_id = discipline_id_raw[0][0]
@@ -1556,16 +1565,18 @@ async def prompt_for_overview_date(update: Update, context: ContextTypes.DEFAULT
     # Новая функция для обработки текстового ввода даты
 
 async def process_overview_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        try:
-            selected_date = datetime.strptime(update.message.text, "%d.%m.%Y").date()
-            # Создаем фейковый объект query, чтобы передать управление основной функции
-            query_data = f"report_overview_date_{selected_date.strftime('%Y-%m-%d')}"
-            fake_query = type('obj', (object,), {'data': query_data, 'message': update.message, 'answer': (lambda: None)})
-            fake_update = type('obj', (object,), {'callback_query': fake_query, 'effective_user': update.effective_user, 'effective_chat': update.effective_chat})
-            return await show_overview_dashboard_menu(fake_update, context)
-        except (ValueError, AttributeError):
-            await update.message.reply_text("Неверный формат даты. Попробуйте еще раз.")
-            return AWAITING_OVERVIEW_DATE
+    """
+    ОБНОВЛЕННАЯ ВЕРСИЯ:
+    Обрабатывает введенную вручную дату и передает управление основной функции.
+    """
+    try:
+        selected_date = datetime.strptime(update.message.text, "%d.%m.%Y").date()
+        # Вызываем основную функцию отображения, передавая ей дату напрямую
+        return await show_overview_dashboard_menu(update, context, selected_date_override=selected_date)
+    except (ValueError, AttributeError):
+        await update.message.reply_text("Неверный формат даты. Попробуйте еще раз.")
+        # Остаемся в том же состоянии, чтобы пользователь мог попробовать снова
+        return AWAITING_OVERVIEW_DATE
 
 async def show_historical_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
