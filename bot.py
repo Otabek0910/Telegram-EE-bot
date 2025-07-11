@@ -1268,7 +1268,7 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         engine = create_engine(DATABASE_URL)
         
         pd_query = """
-            SELECT r.discipline_name, r.work_type_name, r.people_count, r.volume, wt.norm_per_unit
+            SELECT r.discipline_name, r.work_type_name, r.people_count, r.volume, wt.norm_per_unit, wt.unit_of_measure
             FROM reports r
             LEFT JOIN work_types wt ON r.work_type_name = wt.name AND r.discipline_name = (SELECT d.name FROM disciplines d WHERE d.id = wt.discipline_id)
             WHERE r.report_date = :selected_date
@@ -1310,7 +1310,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                     work_summary = disc_df.groupby('work_type_name').agg(
                         total_volume=('volume', 'sum'),
                         total_planned=('planned_volume', 'sum'),
-                        total_people=('people_count', 'sum')
+                        total_people=('people_count', 'sum'),
+                        unit=('unit_of_measure', 'first')
                     ).reset_index()
                     work_summary['performance'] = (work_summary['total_volume'] / work_summary['total_planned']) * 100
                     
@@ -1327,7 +1328,9 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
                 if not work_summary.empty:
                     message_lines.append(f"_{get_text('work_details_label', lang)}_")
                     for _, row in work_summary.iterrows():
-                        message_lines.append(f"  - {get_data_translation(row['work_type_name'], lang)}: *{int(row['total_people'])} чел.* ({row['performance']:.1f}%)")
+                        unit_str = row['unit'] or ''
+                        fact_volume_str = f"| {row['total_volume']:.1f} {unit_str}"
+                        message_lines.append(f"  - {get_data_translation(row['work_type_name'], lang)}: *{int(row['total_people'])} чел.* ({row['performance']:.1f}%) {fact_volume_str}")
 
                 if not disc_other_df.empty:
                     other_people_count = int(disc_other_df['people_count'].sum())
@@ -1547,35 +1550,46 @@ async def report_overview_chart_prompt(update: Update, context: ContextTypes.DEF
     return SELECTING_OVERVIEW_ACTION
 
 async def prompt_for_overview_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-        query = update.callback_query
-        await query.answer()
-        date_str = context.user_data.get('overview_date', date.today().strftime('%Y-%m-%d'))
-        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]
-        # Удаляем старое сообщение, чтобы избежать путаницы
-        if query.message:
-            await query.message.delete()
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="Введите дату в формате *ДД.ММ.ГГГГ*:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
-        )
-        return AWAITING_OVERVIEW_DATE
-
-    # Новая функция для обработки текстового ввода даты
+    """Запрашивает дату и сохраняет ID сообщения с запросом."""
+    query = update.callback_query
+    await query.answer()
+    date_str = context.user_data.get('overview_date', date.today().strftime('%Y-%m-%d'))
+    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]
+    
+    # Удаляем старое сообщение (меню)
+    if query.message:
+        await query.message.delete()
+    
+    # Отправляем новое (просьбу ввести дату) и СОХРАНЯЕМ его ID
+    sent_message = await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text="Введите дату в формате *ДД.ММ.ГГГГ*:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+    context.user_data['last_prompt_message_id'] = sent_message.message_id
+    
+    return AWAITING_OVERVIEW_DATE
 
 async def process_overview_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
     ОБНОВЛЕННАЯ ВЕРСИЯ:
-    Обрабатывает введенную вручную дату и передает управление основной функции.
+    Обрабатывает ручной ввод, удаляет сообщение с запросом и вызывает основную функцию.
     """
+    # ИЗМЕНЕНИЕ: Удаляем сообщение "Введите дату..."
+    prompt_message_id = context.user_data.pop('last_prompt_message_id', None)
+    if prompt_message_id:
+        try:
+            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=prompt_message_id)
+        except Exception as e:
+            logger.info(f"Не удалось удалить сообщение с запросом даты: {e}")
+
     try:
         selected_date = datetime.strptime(update.message.text, "%d.%m.%Y").date()
-        # Вызываем основную функцию отображения, передавая ей дату напрямую
+        # Вызываем основную функцию. Она сама удалит сообщение пользователя с датой.
         return await show_overview_dashboard_menu(update, context, selected_date_override=selected_date)
     except (ValueError, AttributeError):
         await update.message.reply_text("Неверный формат даты. Попробуйте еще раз.")
-        # Остаемся в том же состоянии, чтобы пользователь мог попробовать снова
         return AWAITING_OVERVIEW_DATE
 
 async def show_historical_report_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2113,6 +2127,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = query.data.split('_')
     role_to_list = parts[2]
     current_page = int(parts[3])
+    discipline_filter = parts[4] if len(parts) > 4 else 'all'
 
     table_map = {
         "admins": {"table": "admins", "title": "Администраторы"},
@@ -2129,21 +2144,38 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     table_name = table_info['table']
     offset = (current_page - 1) * USERS_PER_PAGE
 
-    users = []
-    if table_name == 'admins':
+    # Формируем SQL-запрос с учетом фильтра
+    where_clauses = []
+    params = []
+    if discipline_filter != 'all' and role_to_list != 'admins':
+        where_clauses.append("u.discipline = %s")
+        params.append(int(discipline_filter))
+
+    where_sql = ""
+    if where_clauses:
+        where_sql = "WHERE " + " AND ".join(where_clauses)
+    
+    # Запрос для получения пользователей
+    if role_to_list == 'admins':
         query_sql = f"SELECT user_id, first_name, last_name, phone_number, NULL as discipline_name FROM {table_name} ORDER BY first_name, last_name LIMIT %s OFFSET %s"
-        users = db_query(query_sql, (USERS_PER_PAGE, offset))
+        final_params_data = [USERS_PER_PAGE, offset]
     else:
         query_sql = f"""
             SELECT u.user_id, u.first_name, u.last_name, u.phone_number, d.name as discipline_name
             FROM {table_name} u
             LEFT JOIN disciplines d ON u.discipline = d.id
+            {where_sql}
             ORDER BY u.first_name, u.last_name
             LIMIT %s OFFSET %s
         """
-        users = db_query(query_sql, (USERS_PER_PAGE, offset))
+        final_params_data = params + [USERS_PER_PAGE, offset]
+    
+    users = db_query(query_sql, tuple(final_params_data))
 
-    total_users_raw = db_query(f"SELECT COUNT(*) FROM {table_name}")
+    # Запрос для подсчета общего количества с учетом фильтра
+    count_table_alias = "" if role_to_list == 'admins' else "u"
+    count_query = f"SELECT COUNT(*) FROM {table_name} {count_table_alias} {where_sql}"
+    total_users_raw = db_query(count_query, tuple(params))
     total_users = total_users_raw[0][0] if total_users_raw else 0
     total_pages = math.ceil(total_users / USERS_PER_PAGE) if total_users > 0 else 1
 
@@ -2153,7 +2185,8 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += "_Список пуст._"
     else:
         message_lines = []
-        for i, user_data in enumerate(users, start=1):
+        start_index = (current_page - 1) * USERS_PER_PAGE + 1
+        for i, user_data in enumerate(users, start=start_index):
             _user_id, first_name, last_name, phone, discipline_name = user_data
             user_line = f"*{i}.* {first_name or ''} {last_name or ''}"
             if discipline_name:
@@ -2176,11 +2209,23 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     navigation_buttons = []
     if current_page > 1:
-        navigation_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"list_users_{role_to_list}_{current_page - 1}"))
+        navigation_buttons.append(InlineKeyboardButton("◀️", callback_data=f"list_users_{role_to_list}_{current_page - 1}_{discipline_filter}"))
     if current_page < total_pages:
-        navigation_buttons.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"list_users_{role_to_list}_{current_page + 1}"))
+        navigation_buttons.append(InlineKeyboardButton("▶️", callback_data=f"list_users_{role_to_list}_{current_page + 1}_{discipline_filter}"))
     if navigation_buttons: keyboard.append(navigation_buttons)
     
+    # Кнопки фильтра по дисциплинам
+    if role_to_list in ['managers', 'brigades', 'pto', 'kiok']:
+        disciplines = db_query("SELECT id, name FROM disciplines ORDER BY name")
+        if disciplines:
+            keyboard.append([InlineKeyboardButton("🗂️ Фильтр по дисциплинам 🗂️", callback_data="noop")])
+            
+            # Собираем кнопки в ряды по 2
+            disc_buttons_flat = [InlineKeyboardButton(name, callback_data=f"list_users_{role_to_list}_1_{disc_id}") for disc_id, name in disciplines]
+            keyboard.extend([disc_buttons_flat[i:i + 2] for i in range(0, len(disc_buttons_flat), 2)])
+            
+            keyboard.append([InlineKeyboardButton("Показать всех", callback_data=f"list_users_{role_to_list}_1_all")])
+
     keyboard.append([InlineKeyboardButton("◀️ В меню админа", callback_data="manage_users")])
 
     await query.edit_message_text(text=message, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
@@ -3430,17 +3475,15 @@ async def confirm_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def execute_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Удаляет сегодняшний табель для бригадира, ПРОВЕРЯЯ ПРАВА."""
+    """Удаляет сегодняшний табель для бригадира и добавляет кнопку Назад."""
     query = update.callback_query
     
-    # <<< НАЧАЛО ПРОВЕРКИ ПРАВ >>>
     admin_user_id = str(query.from_user.id)
     admin_role = check_user_role(admin_user_id)
     
     if not (admin_role.get('isAdmin') or admin_role.get('managerLevel') == 2 or admin_role.get('isPto')):
         await query.answer("⛔️ У вас нет прав для выполнения этого действия.", show_alert=True)
         return
-    # <<< КОНЕЦ ПРОВЕРКИ ПРАВ >>>
 
     await query.answer("Сбрасываю табель...")
     user_id_to_reset = query.data.split('_')[-1]
@@ -3451,7 +3494,12 @@ async def execute_reset_roster(update: Update, context: ContextTypes.DEFAULT_TYP
     
     logger.info(f"Админ {query.from_user.id} сбросил табель для пользователя {user_id_to_reset}")
     
-    await query.edit_message_text("✅ Табель на сегодня успешно сброшен.")
+    # ИЗМЕНЕНИЕ: Добавлена клавиатура с кнопкой "Назад"
+    keyboard = [[InlineKeyboardButton("◀️ Назад к пользователю", callback_data=f"edit_user_brigades_{user_id_to_reset}")]]
+    await query.edit_message_text(
+        "✅ Табель на сегодня успешно сброшен.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     
     greeting_text = "⚠️ Администратор сбросил ваш сегодняшний табель. Пожалуйста, подайте его заново."
     await force_user_to_main_menu(context, user_id_to_reset, greeting_text)
