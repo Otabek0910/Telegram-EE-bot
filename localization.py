@@ -827,7 +827,30 @@ DATA_TRANSLATIONS = {
     'Присоединение': {'en': 'Connection', 'uz': 'Ulanish'},
     'Монтаж Коробки': {'en': 'Junction Box Installation', 'uz': 'Quti montaji'},
     'Монтаж Щита': {'en': 'Panel/Board Installation', 'uz': 'Shit montaji'},
-    'Прочие работы (Устранение замечаний, Очистка территории, подсобничество и т.д.)': {'en': 'Other works (Punch list clearance, site cleaning, auxiliary work, etc.)', 'uz': 'Boshqa ishlar (Kamchiliklarni bartaraf etish, hududni tozalash, yordamchi ishlar va hk.)'}
+    'Прочие работы (Устранение замечаний, Очистка территории, подсобничество и т.д.)': {'en': 'Other works (Punch list clearance, site cleaning, auxiliary work, etc.)', 'uz': 'Boshqa ishlar (Kamchiliklarni bartaraf etish, hududni tozalash, yordamchi ishlar va hk.)'},
+    'ЗАСЫПКА ВРУЧНУЮ ТРАНШЕЙ': {'en': 'MANUAL BACKFILLING OF TRENCHES','uz': 'TRANSHENI QO‘LDA TO‘LDIRISH'},
+    'ДОРАБОТКА ГРУНТА ВРУЧНУЮ В ТРАНШЕЕ': {'en': 'MANUAL SOIL IMPROVEMENT IN TRENCH','uz': 'TRANSHEDAGI GRUNTNI QO‘LDA QAYTA ISHLASH'},
+    'ПРОКЛАДКА ТРУБЫ ПНД': {'en': 'LAYING OF HDPE PIPE','uz': 'PND QUVURINI YOTQIZISH'},
+    'СВЕРЛЕНИЕ В БЕТОННЫХ КОНСТРУКЦИЯХ ПЕРФОРАТОРОМ ГЛУБИНОЙ': {'en': 'DRILLING IN CONCRETE STRUCTURES WITH DEPTH HAMMER DRILL','uz': 'BETON KONSTRUKTSIYALARDA PERFORATOR BILAN QAZISH'},
+    'ШТРОБЛЕНИЕ БЕТОННЫХ СТЕН, ПОЛОВ И ПОТОЛКОВ': {'en': 'CHASING OF CONCRETE WALLS, FLOORS AND CEILINGS','uz': 'BETON DEVOR, POL VA SHIFTLARNI SHTROB QILISH'},
+    'ИЗГОТОВЛЕНИЕ МЕЛКИХ МЕТАЛЛОКОНСТРУКЦИЙ НА СТРОЙПЛОЩАДКЕ': {'en': 'FABRICATION OF SMALL METAL STRUCTURES ON SITE','uz': 'QURILISH MAYDONIDA MAYDA METALL KONSTRUKTSIYALARNI YASASH'},
+    'МОНТАЖ ЛОТКОВ': {'en': 'INSTALLATION OF TRAYS','uz': 'LOTKALAR O‘RNATISH'},
+    'УСТАНОВКА СТОЙКИ': {'en': 'INSTALLATION OF SUPPORTS','uz': 'TAYANCHLARNI O‘RNATISH'},
+    'УСТАНОВКА ПАНЕЛЬ': {'en': 'INSTALLATION OF PANELS','uz': 'PANELLARNI O‘RNATISH'},
+    'УКЛАДКА МЕТАЛЛОРУКАВА': {'en': 'LAYING OF FLEXIBLE METAL CONDUIT','uz': 'METALL QO‘LBOG‘NI YOTQIZISH'},
+    'ТРУБА ГОФРИРОВАННАЯ ПВХ ДЛЯ ЗАЩИТЫ ПРОВОДОВ И КАБЕЛЕЙ': {'en': 'PVC CORRUGATED PIPE FOR PROTECTION OF WIRES AND CABLES','uz': 'SIM VA KABELLARNI HIMOYA QILISH UCHUN GOFRIROVKALI PVX QUVUR'},
+    'ПРОКЛАДКА КАБЕЛЯ': {'en': 'CABLE LAYING','uz': 'KABEL YOTQIZISH'},
+    'УКЛАДКА КАБЕЛЯ': {'en': 'CABLE INSTALLATION','uz': 'KABEL O‘RNATISH'},
+    'МОНТАЖ ПОЛОСЫ ЗАЗЕМЛЕНИЯ': {'en': 'INSTALLATION OF GROUNDING STRIP','uz': 'YERGA ULASH TASMASINI O‘RNATISH'},
+    'ПОДКЛЮЧЕНИЯ ИМПУЛЬС ТРУБКА': {'en': 'CONNECTION OF IMPULSE TUBE','uz': 'IMPULS TRUBKASINI ULASH'},
+    'СПЕТАНИЯ ИМПУЛЬС ТРУБКА': {'en': 'SPLICING OF IMPULSE TUBE','uz': 'IMPULS TRUBKASINI ULASH (SPETANIYA)'},
+    'МОНТАЖ ИМПУЛЬС ТРУБКА': {'en': 'INSTALLATION OF IMPULSE TUBE','uz': 'IMPULS TRUBKASINI O‘RNATISH'},
+    'УСТАНОВКА ПРИБОРОВ': {'en': 'INSTALLATION OF INSTRUMENTS','uz': 'PRIBORLARNI O‘RNATISH'},
+    'МОНТАЖ 1 КАБЕЛЬНОЙ МУФТЫ КИП': {'en': 'INSTALLATION OF 1 CABLE JOINT FOR I&C','uz': '1 TA KIP KABEL MUFTASINI O‘RNATISH'},
+    'МОНТАЖ 1 М ЗАЗЕМЛЯЮЩЕГО ПРОВОДНИКА ДЛЯ КИП': {'en': 'INSTALLATION OF 1 M GROUNDING CONDUCTOR FOR I&C','uz': 'KIP UCHUN 1 M YERGA ULASH SIMINI O‘RNATISH'},
+    'РАЗДЕЛКА КОНЦОВ КАБЕЛЕЙ': {'en': 'CABLE END PREPARATION','uz': 'KABEL UCHLARINI TAYYORLASH'},
+    'РАСКЛЮЧЕНИЕ КАБЕЛЯ': {'en': 'CABLE TERMINATION','uz': 'KABELNI ULASH (RAZKLYUCHENIYE)'},
+    'ПРОВЕРКА СОСТОЯНИЯ ИЗОЛЯЦИИ КАБЕЛЯ ДО И ПОСЛЕ ПРОКЛАДКИ': {'en': 'CABLE INSULATION TEST BEFORE AND AFTER INSTALLATION','uz': 'KABELNI YOTQIZISH OLDI VA KEYINGI IZOLYATSIYA HOLATINI TEKSHIRISH'}
 }
 
 def get_data_translation(original_text: str, lang_code: str = 'ru') -> str:
