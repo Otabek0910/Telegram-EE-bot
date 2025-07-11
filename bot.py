@@ -1371,8 +1371,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ v5 (ФИНАЛ):
-    Исправлена ошибка парсинга MarkdownV2 (экранирование точки) и логика обработки ошибок.
+    ИСПРАВЛЕННАЯ ВЕРСИЯ v6:
+    Экранирование точек в дате для исправления ошибки парсинга.
     """
     query = update.callback_query
     await query.answer()
@@ -1397,6 +1397,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     
     context.user_data['overview_date'] = date_str
     
+    # Редактируем сообщение, чтобы показать статус загрузки
     if query.message:
         await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
     
@@ -1430,8 +1431,10 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         prochie_people_count = int(prochie_df['people_count'].sum())
 
         if main_df.empty:
+            # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
+            date_for_msg = selected_date.strftime('%d\.%m\.%Y')
             await query.edit_message_text(
-                f"*{get_text('chart_no_data_title', lang)}*\n\nНа дату {selected_date.strftime('%d.%m.%Y')} есть только 'Прочие работы', для которых график не строится.",
+                f"*{get_text('chart_no_data_title', lang)}*\n\nНа дату {date_for_msg} есть только 'Прочие работы', для которых график не строится.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]),
                 parse_mode="Markdown"
             )
@@ -1473,10 +1476,11 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         safe_discipline_name = escape_markdown(get_data_translation(discipline_name, lang), version=2)
         caption_text = f"*Анализ выработки для дисциплины «{safe_discipline_name}»*"
         if prochie_people_count > 0:
-            # ИСПРАВЛЕНИЕ №1: Экранируем точку
             caption_text += f"\n\n*Примечание:* на прочих работах было задействовано *{prochie_people_count}* чел\."
         
-        # ИСПРАВЛЕНИЕ №2: Изменена логика отправки и обработки ошибок
+        # Удаляем сообщение "Пожалуйста, подождите" перед отправкой фото
+        await query.message.delete()
+        
         with open(chart_path, 'rb') as chart_file:
             await context.bot.send_photo(
                 chat_id=query.message.chat_id,
@@ -1487,13 +1491,9 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
                     InlineKeyboardButton("◀️ Назад к сводке", callback_data=f"report_overview_date_{date_str}")
                 ]])
             )
-        
-        # Удаляем сообщение "Пожалуйста, подождите" только после успешной отправки
-        await query.message.delete()
 
     except Exception as e:
         logger.error(f"Ошибка при создании или отправке графика: {e}")
-        # Теперь можно безопасно редактировать сообщение, т.к. оно не было удалено
         if query and query.message:
             await query.message.edit_text(f"❌ {get_text('error_generic', lang)}")
     finally:
