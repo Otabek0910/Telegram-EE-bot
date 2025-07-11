@@ -1371,8 +1371,8 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
 
 async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    ИСПРАВЛЕННАЯ ВЕРСИЯ v6:
-    Экранирование точек в дате для исправления ошибки парсинга.
+    ИСПРАВЛЕННАЯ ВЕРСИЯ v7:
+    Полностью убрано форматирование из сообщений об ошибках, чтобы гарантированно избежать сбоя.
     """
     query = update.callback_query
     await query.answer()
@@ -1397,7 +1397,6 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     
     context.user_data['overview_date'] = date_str
     
-    # Редактируем сообщение, чтобы показать статус загрузки
     if query.message:
         await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
     
@@ -1417,11 +1416,11 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         with engine.connect() as connection:
             df = pd.read_sql_query(text(pd_query), connection, params=params)
 
+        # --- ИЗМЕНЕНИЕ №1: Убран parse_mode ---
         if df.empty or df['norm_per_unit'].isnull().all():
             await query.edit_message_text(
-                f"*{get_text('chart_no_data_title', lang)}*\n\n_{get_text('chart_no_data_subtitle', lang).format(discipline=get_data_translation(discipline_name, lang))}_",
+                f"{get_text('chart_no_data_title', lang)}\n\n{get_text('chart_no_data_subtitle', lang).format(discipline=get_data_translation(discipline_name, lang))}",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]),
-                parse_mode="Markdown"
             )
             return SELECTING_OVERVIEW_ACTION
 
@@ -1430,13 +1429,11 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         main_df = df[df['is_prochie'] == False].copy()
         prochie_people_count = int(prochie_df['people_count'].sum())
 
+        # --- ИЗМЕНЕНИЕ №2: Убран parse_mode ---
         if main_df.empty:
-            # --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
-            date_for_msg = selected_date.strftime('%d\.%m\.%Y')
             await query.edit_message_text(
-                f"*{get_text('chart_no_data_title', lang)}*\n\nНа дату {date_for_msg} есть только 'Прочие работы', для которых график не строится.",
+                f"{get_text('chart_no_data_title', lang)}\n\nНа дату {selected_date.strftime('%d.%m.%Y')} есть только 'Прочие работы', для которых график не строится.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]),
-                parse_mode="Markdown"
             )
             return SELECTING_OVERVIEW_ACTION
 
@@ -1478,7 +1475,6 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         if prochie_people_count > 0:
             caption_text += f"\n\n*Примечание:* на прочих работах было задействовано *{prochie_people_count}* чел\."
         
-        # Удаляем сообщение "Пожалуйста, подождите" перед отправкой фото
         await query.message.delete()
         
         with open(chart_path, 'rb') as chart_file:
@@ -1500,6 +1496,7 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         if chart_path and os.path.exists(chart_path):
             os.remove(chart_path)
             
+    return SELECTING_OVERVIEW_ACTION
     return SELECTING_OVERVIEW_ACTION
 
 async def report_overview_chart_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
