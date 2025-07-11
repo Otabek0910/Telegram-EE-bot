@@ -1833,17 +1833,31 @@ async def show_problem_brigades_menu(update: Update, context: ContextTypes.DEFAU
         parse_mode="Markdown"
     )
 
-async def generate_problem_brigades_report(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_name: str = None, page: int = 1) -> None:
-    """Генерирует детальный отчет по проблемным бригадам (ФИНАЛЬНАЯ ВЕРСИЯ БЕЗ ФИЛЬТРА)."""
+async def generate_problem_brigades_report(update: Update, context: ContextTypes.DEFAULT_TYPE, discipline_id: int = None, page: int = 1) -> None:
+    """
+    Генерирует отчет по проблемным бригадам (ИСПРАВЛЕНА ОШИБКА UnboundLocalError).
+    """
     query = update.callback_query
     await query.answer()
 
-    if discipline_id is None:
-        parts = query.data.split('_')
-        discipline_id = int(parts[3])
-        page = int(parts[4]) if len(parts) > 4 else 1
+    # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
+    # Четко определяем переменные в самом начале, чтобы избежать ошибок
+    local_discipline_id = discipline_id
+    local_page = page
 
-    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
+    # Если функция вызвана нажатием кнопки (для админа), то параметры будут пустыми.
+    # В этом случае мы считываем их из данных кнопки.
+    if local_discipline_id is None:
+        try:
+            parts = query.data.split('_')
+            local_discipline_id = int(parts[3])
+            local_page = int(parts[4]) if len(parts) > 4 else 1
+        except (IndexError, ValueError):
+            await query.edit_message_text("❌ Ошибка: Не удалось прочитать данные из кнопки.")
+            return
+    # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+            
+    discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (local_discipline_id,))
     if not discipline_name_raw:
         await query.edit_message_text("Ошибка: Дисциплина не найдена по ID.")
         return
@@ -1857,7 +1871,6 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
     try:
         today_str = date.today().strftime('%Y-%m-%d')
         
-        # 1. Получаем список тех, кто не сдал отчет
         non_reporters_query = """
             SELECT b.brigade_name 
             FROM brigades b
@@ -1865,13 +1878,11 @@ async def generate_problem_brigades_report(update: Update, context: ContextTypes
                 SELECT 1 FROM reports r WHERE r.foreman_name = b.brigade_name AND r.report_date = %s
             ) ORDER BY b.brigade_name
         """
-        non_reporters_raw = db_query(non_reporters_query, (discipline_id, today_str))
+        non_reporters_raw = db_query(non_reporters_query, (local_discipline_id, today_str))
         non_reporters = [row[0] for row in non_reporters_raw] if non_reporters_raw else []
 
         engine = create_engine(DATABASE_URL)
         
-        
-        # --- ИСПРАВЛЕНИЕ ЗДЕСЬ: Убран "AND r.kiok_approved = 1" ---
         pd_query = """
             SELECT r.foreman_name, r.people_count, r.volume, wt.norm_per_unit, wt.name as work_type_name_alias
             FROM reports r 
