@@ -1369,10 +1369,10 @@ async def show_overview_dashboard_menu(update: Update, context: ContextTypes.DEF
         await wait_msg.edit_text(f"❗ *{get_text('error_generic', lang)}*")
         return ConversationHandler.END
 
-async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    НОВАЯ ВЕРСИЯ:
-    Корректно обрабатывает случай, когда нет отчетов для построения графика.
+    ИСПРАВЛЕННАЯ ВЕРСИЯ v5 (ФИНАЛ):
+    Исправлена ошибка парсинга MarkdownV2 (экранирование точки) и логика обработки ошибок.
     """
     query = update.callback_query
     await query.answer()
@@ -1380,24 +1380,31 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
     user_id = str(query.from_user.id)
     lang = get_user_language(user_id)
 
-    parts = query.data.split('_')
-    discipline_id = int(parts[3])
+    try:
+        base_callback, date_str = query.data.rsplit('_', 1)
+        discipline_id = int(base_callback.split('_')[-1])
+        selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except (ValueError, IndexError):
+        logger.error(f"Критическая ошибка разбора callback_data в generate_overview_chart: {query.data}")
+        await query.edit_message_text("❌ Произошла внутренняя ошибка. Не удалось разобрать данные для графика.")
+        return SELECTING_OVERVIEW_ACTION
+
     discipline_name_raw = db_query("SELECT name FROM disciplines WHERE id = %s", (discipline_id,))
     if not discipline_name_raw:
         await query.edit_message_text("❌ Ошибка: Дисциплина с таким ID не найдена.")
-        return
+        return SELECTING_OVERVIEW_ACTION
     discipline_name = discipline_name_raw[0][0]
     
-    date_str = context.user_data.get('overview_date')
-    selected_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-
+    context.user_data['overview_date'] = date_str
+    
     if query.message:
-        await query.message.delete()
-    wait_msg = await context.bot.send_message(query.message.chat_id, f"⏳ {get_text('loading_please_wait', lang)}")
+        await query.edit_message_text(f"⏳ {get_text('loading_please_wait', lang)}")
+    
     chart_path = None
 
     try:
         engine = create_engine(DATABASE_URL)
+        
         pd_query = """
             SELECT r.work_type_name, r.people_count, r.volume, wt.norm_per_unit
             FROM reports r
@@ -1409,47 +1416,52 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         with engine.connect() as connection:
             df = pd.read_sql_query(text(pd_query), connection, params=params)
 
-        # --- НАЧАЛО ИСПРАВЛЕНИЯ ---
-        if df.empty:
-            await wait_msg.edit_text(
+        if df.empty or df['norm_per_unit'].isnull().all():
+            await query.edit_message_text(
                 f"*{get_text('chart_no_data_title', lang)}*\n\n_{get_text('chart_no_data_subtitle', lang).format(discipline=get_data_translation(discipline_name, lang))}_",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]),
                 parse_mode="Markdown"
             )
-            return
-        # --- КОНЕЦ ИСПРАВЛЕНИЯ ---
+            return SELECTING_OVERVIEW_ACTION
 
         df['is_prochie'] = df['work_type_name'].str.contains('Прочие', case=False, na=False) | df['norm_per_unit'].isnull()
         prochie_df = df[df['is_prochie'] == True]
-        main_df = df[df['is_prochie'] == False]
+        main_df = df[df['is_prochie'] == False].copy()
         prochie_people_count = int(prochie_df['people_count'].sum())
 
         if main_df.empty:
-            await wait_msg.edit_message_text(
+            await query.edit_message_text(
                 f"*{get_text('chart_no_data_title', lang)}*\n\nНа дату {selected_date.strftime('%d.%m.%Y')} есть только 'Прочие работы', для которых график не строится.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data=f"report_overview_date_{date_str}")]]),
                 parse_mode="Markdown"
             )
-            return
+            return SELECTING_OVERVIEW_ACTION
 
         main_df['plan'] = main_df['people_count'] * main_df['norm_per_unit']
         df_chart = main_df.groupby('work_type_name').agg(
-            План=('plan', 'sum'), Факт=('volume', 'sum'), Люди=('people_count', 'sum')
+            План=('plan', 'sum'), 
+            Факт=('volume', 'sum'),
+            Люди=('people_count', 'sum')
         ).reset_index()
-        df_chart['x_label'] = df_chart.apply(lambda row: f"{row['work_type_name']}\n({int(row['Люди'])} чел.)", axis=1)
+
+        df_chart['x_label'] = df_chart.apply(
+            lambda row: f"{row['work_type_name']}\n({int(row['Люди'])} чел.)", axis=1
+        )
 
         plt.style.use('seaborn-v0_8-darkgrid')
         fig, ax = plt.subplots(figsize=(12, 8))
         df_chart.plot(x='x_label', y=['План', 'Факт'], kind='bar', ax=ax, width=0.7, legend=True)
         
         for bar in ax.patches:
-            ax.annotate(f'{bar.get_height():.1f}', (bar.get_x() + bar.get_width() / 2, bar.get_height()),
-                        ha='center', va='center', size=9, xytext=(0, 8), textcoords='offset points', fontweight='bold')
+            ax.annotate(f'{bar.get_height():.1f}',
+                        (bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                        ha='center', va='center', size=9, xytext=(0, 8),
+                        textcoords='offset points', fontweight='bold')
 
         ax.set_title(f"Выработка по дисциплине «{discipline_name}» за {selected_date.strftime('%d.%m.%Y')}", fontsize=16, fontweight='bold')
         ax.set_ylabel("Объем работ", fontsize=12)
         ax.set_xlabel("")
-        ax.tick_params(axis='x', labelsize=10, rotation=15, ha="right")
+        ax.tick_params(axis='x', labelsize=10, rotation=15)
         ax.legend(fontsize=12)
         ax.set_ylim(top=ax.get_ylim()[1] * 1.15)
         plt.tight_layout(pad=2.0)
@@ -1461,18 +1473,29 @@ async def generate_overview_chart(update: Update, context: ContextTypes.DEFAULT_
         safe_discipline_name = escape_markdown(get_data_translation(discipline_name, lang), version=2)
         caption_text = f"*Анализ выработки для дисциплины «{safe_discipline_name}»*"
         if prochie_people_count > 0:
-            caption_text += f"\n\n*Примечание:* на прочих работах было задействовано *{prochie_people_count}* чел."
+            # ИСПРАВЛЕНИЕ №1: Экранируем точку
+            caption_text += f"\n\n*Примечание:* на прочих работах было задействовано *{prochie_people_count}* чел\."
         
+        # ИСПРАВЛЕНИЕ №2: Изменена логика отправки и обработки ошибок
         with open(chart_path, 'rb') as chart_file:
             await context.bot.send_photo(
-                chat_id=query.message.chat_id, photo=chart_file, caption=caption_text,
+                chat_id=query.message.chat_id,
+                photo=chart_file,
+                caption=caption_text,
                 parse_mode='MarkdownV2',
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад к сводке", callback_data=f"report_overview_date_{date_str}")]]))
-        await wait_msg.delete()
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("◀️ Назад к сводке", callback_data=f"report_overview_date_{date_str}")
+                ]])
+            )
+        
+        # Удаляем сообщение "Пожалуйста, подождите" только после успешной отправки
+        await query.message.delete()
 
     except Exception as e:
-        logger.error(f"Ошибка при создании графика: {e}")
-        await wait_msg.edit_text(f"❌ {get_text('error_generic', lang)}")
+        logger.error(f"Ошибка при создании или отправке графика: {e}")
+        # Теперь можно безопасно редактировать сообщение, т.к. оно не было удалено
+        if query and query.message:
+            await query.message.edit_text(f"❌ {get_text('error_generic', lang)}")
     finally:
         if chart_path and os.path.exists(chart_path):
             os.remove(chart_path)
