@@ -1923,7 +1923,6 @@ async def manage_users_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка в manage_users_menu: {e}")
         await query.edit_message_text("❌ Произошла ошибка при загрузке данных о пользователях. Попробуйте снова.")
 
-
 async def link_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Привязывает ID темы к дисциплине и отправляет все неотправленные отчеты по ней (PostgreSQL-совместимая версия)."""
     user_id = str(update.effective_user.id)

@@ -852,6 +852,10 @@ DATA_TRANSLATIONS = {
     'УСТАНОВКА ПОДОКОННЫХ ДОСОК ИЗ ПВХ': {'en': 'Installation of PVC window sills', 'uz': 'PVX deraza tokchalarini o\'rnatish'},
     'УСТРОЙСТВО ДЕКОРАТИВНОГО ПОКРЫТИЯ ТИПА "OTTOCENTO"': {'en': 'Installation of "Ottocento" type decorative coating', 'uz': '"Ottocento" turidagi dekorativ qoplamani qurish'},
 
+
+    'УСТАНОВКА ПРИБОРОВ': {'en': 'Installation of instruments', 'uz': 'Asboblarni o\'rnatish'},
+    'СПЕТАНИЕ ИМПУЛЬСНОЙ ТРУБКИ': {'en': 'Linking of impulse tube', 'uz': 'Impuls trubkasini ulash'},
+
     'ПРОЧИЕ РАБОТЫ (УСТРАНЕНИЕ ЗАМЕЧАНИЙ, ОЧИСТКА ТЕРРИТОРИИ, ПОДСОБНИЧЕСТВО И Т.Д.)': {'en': 'Miscellaneous works (rectification of defects, site cleaning, auxiliary work, etc.)', 'uz': 'Boshqa ishlar (kamchiliklarni bartaraf etish, hududni tozalash, yordamchi ishlar va h.k.)'},
 
     'ТН': {'en': 't (tonne)', 'uz': 't (tonna)'},
