@@ -3898,19 +3898,17 @@ async def show_work_types_page(update: Update, context: ContextTypes.DEFAULT_TYP
         return ConversationHandler.END
 
     work_types_raw = db_query("""
-     SELECT wt.id, wt.name FROM work_types wt
+     SELECT wt.id, wt.name, wt.unit_of_measure FROM work_types wt
      JOIN disciplines d ON wt.discipline_id = d.id
      WHERE d.name = %s
      ORDER BY wt.display_order, wt.name
      """, (discipline_name,))
 
     if not work_types_raw:
-        text = get_text('report_error_no_work_types', lang).format(discipline=discipline_name)
+        text = get_text('report_error_no_work_types', lang).format(discipline=get_data_translation(discipline_name, lang))
         user_role_check = check_user_role(user_id)
-
         back_callback = "new_report" if (user_role_check.get('isAdmin') or user_role_check.get('managerLevel') == 1) else "back_to_start_report"
         keyboard = [[InlineKeyboardButton(get_text('back_button', lang), callback_data=back_callback)]]
-        
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id_to_edit, text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return ConversationHandler.END
 
@@ -3922,21 +3920,23 @@ async def show_work_types_page(update: Update, context: ContextTypes.DEFAULT_TYP
 
     keyboard_buttons = []
 
-    for work_id, work_name in works_on_page:
-        unit = ''
-        cleaned_name = work_name
+    for work_id, work_name_from_db, unit_from_db in works_on_page:
+        # 1. Очищаем название работы от возможной единицы измерения
+        clean_work_name = work_name_from_db.strip()
+        if ',' in clean_work_name:
+            # Отсекаем все, что после последней запятой
+            clean_work_name = clean_work_name.rsplit(',', 1)[0].strip()
 
-        if ',' in work_name:
-            try:
-                cleaned_name, unit = work_name.rsplit(',', 1)
-                cleaned_name = cleaned_name.strip()
-                unit = f", {unit.strip()}" 
-            except ValueError:
-                pass
+        # 2. Переводим чистое название
+        translated_name = get_data_translation(clean_work_name, lang)
+        
+        button_text = translated_name 
 
-        translated_base = get_data_translation(cleaned_name, lang)
-
-        button_text = f"{translated_base}{unit}"
+        # 3. Если в отдельном столбце есть единица измерения, переводим и ее
+        if unit_from_db and unit_from_db.strip():
+            # 4. Соединяем переведенные части
+            translated_unit = get_data_translation(unit_from_db.strip(), lang)
+            button_text += f", {translated_unit}"
 
         keyboard_buttons.append([InlineKeyboardButton(button_text, callback_data=f"report_work_{work_id}")])
 
